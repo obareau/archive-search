@@ -1,0 +1,7 @@
+app.py
+pyproject.toml
+archive_search.egg-info/PKG-INFO
+archive_search.egg-info/SOURCES.txt
+archive_search.egg-info/dependency_links.txt
+archive_search.egg-info/requires.txt
+archive_search.egg-info/top_level.txt

@@ -1,0 +1,11 @@
+[project]
+name = "archive-search"
+version = "0.1.0"
+dependencies = [
+    "flask>=3.0",
+    "requests>=2.31",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

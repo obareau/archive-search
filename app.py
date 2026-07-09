@@ -245,4 +245,4 @@ if __name__ == '__main__':
     os.makedirs('/home/olivier/DEV/archive-search', exist_ok=True)
     port = int(os.getenv('ARCHIVE_PORT', 5556))
     print(f"🎬 Archive Search @ http://127.0.0.1:{port}")
-    app.run(host='127.0.0.1', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)

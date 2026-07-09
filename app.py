@@ -4,6 +4,7 @@ public, à travers plusieurs sources (archive.org, Gutenberg, Wikimedia
 Commons, LibriVox)."""
 
 import os
+import random
 import re
 import time
 import requests
@@ -57,16 +58,31 @@ def strip_html(text):
 
 # ── Sources ────────────────────────────────────────────────────────────
 
-def search_archive_org(query, search_type, page):
+SORT_OPTIONS = {
+    "": None,
+    "date_desc": "date desc",
+    "downloads_desc": "downloads desc",
+}
+
+COLLECTIONS = {
+    "": None,
+    "prelinger": "prelinger",
+    "opensource_movies": "opensource_movies",
+    "classic_tv": "classic_tv",
+    "oldtimeradio": "oldtimeradio",
+}
+
+
+def search_archive_org(query, search_type, page, sort="", collection=""):
     q = f'"{query}"'
     if search_type == "film":
         q += " AND mediatype:movies AND year:[1920 TO 1980]"
-    elif search_type == "prelinger":
-        q += " AND collection:prelinger"
     elif search_type == "audio":
         q += " AND mediatype:audio"
     elif search_type == "pdf":
         q += " AND mediatype:texts AND format:PDF"
+    if COLLECTIONS.get(collection):
+        q += f" AND collection:{COLLECTIONS[collection]}"
 
     params = {
         "q": q,
@@ -75,6 +91,8 @@ def search_archive_org(query, search_type, page):
         "rows": ROWS_PER_PAGE,
         "page": page,
     }
+    if SORT_OPTIONS.get(sort):
+        params["sort[]"] = SORT_OPTIONS[sort]
     resp = requests.get("https://archive.org/advancedsearch.php", params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     data = resp.json()
     docs = data.get("response", {}).get("docs", [])
@@ -97,7 +115,7 @@ def search_archive_org(query, search_type, page):
     return results, total
 
 
-def search_gutenberg(query, _search_type, page):
+def search_gutenberg(query, _search_type, page, _sort="", _collection=""):
     params = {"search": query, "page": page}
     resp = requests.get("https://gutendex.com/books/", params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     data = resp.json()
@@ -127,7 +145,7 @@ def search_gutenberg(query, _search_type, page):
     return results, total
 
 
-def search_wikimedia(query, _search_type, page):
+def search_wikimedia(query, _search_type, page, _sort="", _collection=""):
     offset = (page - 1) * ROWS_PER_PAGE
     search_params = {
         # srnamespace=6 = espace de noms "File" — sans ça, la recherche renvoie
@@ -169,7 +187,7 @@ def search_wikimedia(query, _search_type, page):
     return results, total
 
 
-def search_librivox(query, _search_type, page):
+def search_librivox(query, _search_type, page, _sort="", _collection=""):
     # API LibriVox limitée : recherche par PRÉFIXE de titre (^) uniquement,
     # pas de plein texte. Pas de total fiable — pagination gérée par offset,
     # "page suivante" activée seulement si la page courante est pleine.
@@ -220,6 +238,10 @@ PREFERRED_EXT = {
 
 
 def resolve_archive_file(identifier):
+    """Renvoie (url, mediatype) du fichier lisible le plus adapté, ou
+    (None, mediatype) si aucun fichier utilisable n'a été trouvé — le
+    mediatype est renvoyé même dans ce cas pour que le frontend sache quel
+    lecteur (audio/vidéo) aurait été utilisé."""
     resp = requests.get(f"https://archive.org/metadata/{identifier}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
     data = resp.json()
     files = data.get("files", [])
@@ -238,12 +260,45 @@ def resolve_archive_file(identifier):
     # plutôt que de renvoyer une vignette ou un fichier de métadonnées au hasard.
     candidates = [f for f in files if any(f.get("name", "").lower().endswith(e) for e in exts)]
     if not candidates:
-        return None
+        return None, mediatype
     best = sorted(candidates, key=score)[0]
     name = best.get("name", "")
     if not name:
+        return None, mediatype
+    return f"https://archive.org/download/{identifier}/{name}", mediatype
+
+
+# ── "Surprise-moi" : pioche un item au hasard dans une collection vintage. ─
+
+RANDOM_COLLECTIONS = ["prelinger", "opensource_movies", "classic_tv", "oldtimeradio"]
+
+
+def random_archive_item():
+    collection = random.choice(RANDOM_COLLECTIONS)
+    params = {
+        "q": f"collection:{collection}",
+        "fl": "identifier,title,creator,year,mediatype,description",
+        "output": "json",
+        "rows": 1,
+        "start": random.randint(0, 2000),
+    }
+    resp = requests.get("https://archive.org/advancedsearch.php", params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    docs = resp.json().get("response", {}).get("docs", [])
+    if not docs:
         return None
-    return f"https://archive.org/download/{identifier}/{name}"
+    doc = docs[0]
+    identifier = doc.get("identifier", "")
+    return {
+        "title": doc.get("title", identifier or "N/A"),
+        "creator": first(doc.get("creator"), "N/A"),
+        "year": doc.get("year", ""),
+        "type": doc.get("mediatype", ""),
+        "description": str(first(doc.get("description"), ""))[:150],
+        "url": f"https://archive.org/details/{identifier}",
+        "thumbnail": f"https://archive.org/services/img/{identifier}" if identifier else "",
+        "source": "archive.org",
+        "identifier": identifier,
+    }
 
 
 # ── UI ───────────────────────────────────────────────────────────────
@@ -325,11 +380,31 @@ HTML = """
             background: #060812;
         }
 
+        .item-title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
         .item-title {
             font-weight: 600;
-            margin-bottom: 8px;
             color: #fff;
         }
+
+        .fav-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 18px;
+            color: #555;
+            cursor: pointer;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .fav-btn.active { color: #d4af37; }
+        .fav-btn:hover { color: #e6c44a; }
 
         .item-meta {
             font-size: 12px;
@@ -369,6 +444,9 @@ HTML = """
             color: #6ab3ff;
         }
 
+        .item-player { width: 100%; margin-top: 10px; border-radius: 6px; background: #000; }
+        audio.item-player { height: 36px; }
+
         .loading { text-align: center; padding: 40px; color: #888; }
         .error { color: #ff6b6b; padding: 16px; background: #1a2525; border-radius: 6px; }
 
@@ -380,6 +458,11 @@ HTML = """
             margin-top: 24px;
         }
         .pagination span { color: #888; font-size: 13px; }
+
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .toolbar button { background: #1a2840; color: #4a9eff; }
+        .toolbar button:hover { background: #2a3860; color: #6ab3ff; }
+        .toolbar button.on { background: #d4af37; color: #0a0e27; }
     </style>
 </head>
 <body>
@@ -395,13 +478,28 @@ HTML = """
                 <option value="librivox">LibriVox (audio livres)</option>
             </select>
             <select id="type">
-                <option value="">Tous</option>
+                <option value="">Tous types</option>
                 <option value="film">Films (1920-1980)</option>
-                <option value="prelinger">Prelinger (films éphémères)</option>
                 <option value="audio">Audio</option>
                 <option value="pdf">PDFs</option>
             </select>
+            <select id="collection">
+                <option value="">Toutes collections</option>
+                <option value="prelinger">Prelinger (films éphémères)</option>
+                <option value="opensource_movies">Films libres</option>
+                <option value="classic_tv">TV classique</option>
+                <option value="oldtimeradio">Radio vintage</option>
+            </select>
+            <select id="sort">
+                <option value="">Pertinence</option>
+                <option value="date_desc">Plus récent</option>
+                <option value="downloads_desc">Plus téléchargé</option>
+            </select>
             <button onclick="search(1)">Chercher</button>
+        </div>
+        <div class="toolbar">
+            <button id="btnSurprise">🎲 Surprise-moi</button>
+            <button id="btnFavorites">★ Favoris (<span id="favCount">0</span>)</button>
         </div>
 
         <div id="results"></div>
@@ -413,67 +511,133 @@ HTML = """
     </div>
 
     <script>
-        let state = { page: 1, hasMore: false };
+        let state = { page: 1, hasMore: false, favoritesView: false };
+        let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
             const isArchive = document.getElementById("source").value === "archive.org";
             document.getElementById("type").style.display = isArchive ? "" : "none";
+            document.getElementById("collection").style.display = isArchive ? "" : "none";
+            document.getElementById("sort").style.display = isArchive ? "" : "none";
         });
 
-        async function resolveDirectUrl(item, linkEl) {
+        // ── Favoris (localStorage, pas de backend — outil perso/LAN) ──────
+        function favKey(item) { return `${item.source}:${item.identifier}`; }
+        function getFavorites() {
+            try { return JSON.parse(localStorage.getItem("archiveFavorites") || "[]"); }
+            catch (e) { return []; }
+        }
+        function setFavorites(list) {
+            localStorage.setItem("archiveFavorites", JSON.stringify(list));
+            document.getElementById("favCount").textContent = list.length;
+        }
+        function isFavorite(item) { return getFavorites().some(f => favKey(f) === favKey(item)); }
+        function toggleFavorite(i) {
+            const item = items[i];
+            const favs = getFavorites();
+            const idx = favs.findIndex(f => favKey(f) === favKey(item));
+            if (idx >= 0) favs.splice(idx, 1); else favs.push(item);
+            setFavorites(favs);
+            if (state.favoritesView) renderResults(getFavorites());
+            else {
+                const btn = document.querySelector(`.fav-btn[data-idx="${i}"]`);
+                if (btn) { btn.classList.toggle("active", isFavorite(item)); btn.textContent = isFavorite(item) ? "★" : "☆"; }
+            }
+        }
+
+        // ── Lecteur inline (archive.org) : résout le fichier direct puis
+        // embarque <video>/<audio> dans la carte plutôt qu'un simple lien. ──
+        async function resolveDirectUrl(item, btnEl) {
             if (item.source !== "archive.org" || !item.identifier) return;
-            linkEl.textContent = "…";
+            btnEl.textContent = "…";
             try {
                 const res = await fetch(`/api/file/${encodeURIComponent(item.identifier)}`);
                 const data = await res.json();
-                if (data.url) {
-                    linkEl.href = data.url;
-                    linkEl.textContent = "Fichier direct";
-                    linkEl.target = "_blank";
+                const card = btnEl.closest(".item");
+                if (data.url && data.mediatype === "movies") {
+                    card.insertAdjacentHTML("beforeend", `<video class="item-player" src="${data.url}" controls></video>`);
+                    btnEl.remove();
                     return;
                 }
-            } catch (e) { /* on garde le fallback fiche */ }
-            linkEl.textContent = "Fichier direct (indisponible)";
+                if (data.url && data.mediatype === "audio") {
+                    card.insertAdjacentHTML("beforeend", `<audio class="item-player" src="${data.url}" controls></audio>`);
+                    btnEl.remove();
+                    return;
+                }
+                if (data.url) {
+                    btnEl.outerHTML = `<a href="${data.url}" target="_blank" class="item-link">Fichier direct</a>`;
+                    return;
+                }
+            } catch (e) { /* fallback texte ci-dessous */ }
+            btnEl.textContent = "Fichier direct (indisponible)";
+            btnEl.disabled = true;
         }
 
-        function renderResults(items) {
-            const el = document.getElementById("results");
-            if (items.length === 0) {
-                el.innerHTML = '<div class="error">Aucun résultat</div>';
-                return;
-            }
-            el.innerHTML = `<div class="results">${items.map((item, i) => `
+        function itemCard(item, i) {
+            const fav = isFavorite(item);
+            return `
                 <div class="item">
                     ${item.thumbnail ? `<img class="item-thumb" src="${item.thumbnail}" loading="lazy" onerror="this.style.display='none'">` : ""}
-                    <div class="item-title">${item.title}</div>
+                    <div class="item-title-row">
+                        <div class="item-title">${item.title}</div>
+                        <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
+                    </div>
                     <div class="item-meta"><span class="src">${item.source}</span> · ${item.year || item.type} · ${item.creator || "N/A"}</div>
                     <div class="item-desc">${item.description || ""}</div>
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
-                        ${item.source === "archive.org" ? `<a href="#" class="item-link" data-idx="${i}" onclick="event.preventDefault(); resolveDirectUrl(items[${i}], this)">Fichier direct</a>` : ""}
+                        ${item.source === "archive.org" ? `<button class="item-link" onclick="resolveDirectUrl(items[${i}], this)">Fichier direct</button>` : ""}
                     </div>
                 </div>
-            `).join("")}</div>`;
+            `;
         }
 
-        let items = [];
-
-        async function search(page) {
-            const query = document.getElementById("query").value;
-            const source = document.getElementById("source").value;
-            const type = document.getElementById("type").value;
-
-            if (!query) {
-                alert("Entrez un terme de recherche");
+        function renderResults(list) {
+            const el = document.getElementById("results");
+            if (list.length === 0) {
+                el.innerHTML = '<div class="error">Aucun résultat</div>';
                 return;
             }
+            items = list;
+            el.innerHTML = `<div class="results">${list.map((item, i) => itemCard(item, i)).join("")}</div>`;
+        }
+
+        // ── État de recherche dans l'URL (partage, retour navigateur) ─────
+        function currentParams() {
+            return {
+                q: document.getElementById("query").value,
+                source: document.getElementById("source").value,
+                type: document.getElementById("type").value,
+                collection: document.getElementById("collection").value,
+                sort: document.getElementById("sort").value,
+            };
+        }
+        function applyParams(p) {
+            document.getElementById("query").value = p.q || "";
+            document.getElementById("source").value = p.source || "archive.org";
+            document.getElementById("type").value = p.type || "";
+            document.getElementById("collection").value = p.collection || "";
+            document.getElementById("sort").value = p.sort || "";
+            document.getElementById("source").dispatchEvent(new Event("change"));
+        }
+
+        async function search(page, pushHistory) {
+            if (pushHistory === undefined) pushHistory = true;
+            state.favoritesView = false;
+            const p = currentParams();
+            if (!p.q) { alert("Entrez un terme de recherche"); return; }
             state.page = page;
+
+            if (pushHistory) {
+                const url = `?${new URLSearchParams({ ...p, page }).toString()}`;
+                history.pushState({ ...p, page }, "", url);
+            }
 
             document.getElementById("results").innerHTML = '<div class="loading">⏳ Recherche...</div>';
             document.getElementById("pagination").style.display = "none";
 
             try {
-                const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&type=${type}&source=${source}&page=${page}`);
+                const res = await fetch(`/api/search?${new URLSearchParams({ ...p, page }).toString()}`);
                 const data = await res.json();
 
                 if (data.error) {
@@ -481,8 +645,7 @@ HTML = """
                     return;
                 }
 
-                items = data.results;
-                renderResults(items);
+                renderResults(data.results);
 
                 state.hasMore = data.has_more;
                 document.getElementById("pagination").style.display = "flex";
@@ -502,6 +665,44 @@ HTML = """
         document.getElementById("query").addEventListener("keypress", (e) => {
             if (e.key === "Enter") search(1);
         });
+
+        document.getElementById("btnFavorites").addEventListener("click", () => {
+            state.favoritesView = !state.favoritesView;
+            document.getElementById("btnFavorites").classList.toggle("on", state.favoritesView);
+            document.getElementById("pagination").style.display = "none";
+            if (state.favoritesView) renderResults(getFavorites());
+            else document.getElementById("results").innerHTML = "";
+        });
+
+        document.getElementById("btnSurprise").addEventListener("click", async () => {
+            state.favoritesView = false;
+            document.getElementById("pagination").style.display = "none";
+            document.getElementById("results").innerHTML = '<div class="loading">🎲 Pioche en cours...</div>';
+            try {
+                const res = await fetch("/api/random");
+                const data = await res.json();
+                if (data.error) { document.getElementById("results").innerHTML = `<div class="error">${data.error}</div>`; return; }
+                renderResults([data.result]);
+            } catch (err) {
+                document.getElementById("results").innerHTML = `<div class="error">Erreur: ${err.message}</div>`;
+            }
+        });
+
+        window.addEventListener("popstate", (e) => {
+            if (e.state) { applyParams(e.state); search(e.state.page || 1, false); }
+        });
+
+        // Init : favoris + recherche depuis l'URL si présente.
+        setFavorites(getFavorites());
+        (function initFromUrl() {
+            const p = Object.fromEntries(new URLSearchParams(location.search));
+            if (p.q) {
+                applyParams(p);
+                search(parseInt(p.page || "1", 10), false);
+            } else {
+                document.getElementById("source").dispatchEvent(new Event("change"));
+            }
+        })();
     </script>
 </body>
 </html>
@@ -518,6 +719,8 @@ def api_search():
     query = request.args.get("q", "")
     search_type = request.args.get("type", "")
     source = request.args.get("source", "archive.org")
+    sort = request.args.get("sort", "")
+    collection = request.args.get("collection", "")
     page = max(1, int(request.args.get("page", 1)))
 
     if not query:
@@ -527,13 +730,13 @@ def api_search():
     if not search_fn:
         return jsonify({"error": f"Source inconnue : {source}"}), 400
 
-    cache_key = (source, query, search_type, page)
+    cache_key = (source, query, search_type, sort, collection, page)
     cached = cache_get(cache_key)
     if cached is not None:
         return jsonify(cached)
 
     try:
-        results, total = search_fn(query, search_type, page)
+        results, total = search_fn(query, search_type, page, sort, collection)
         has_more = (total is not None and page * ROWS_PER_PAGE < total) or (total is None and len(results) >= ROWS_PER_PAGE)
         payload = {"results": results, "total": total, "has_more": has_more}
         cache_set(cache_key, payload)
@@ -549,12 +752,23 @@ def api_file(identifier):
     if cached is not None:
         return jsonify(cached)
     try:
-        url = resolve_archive_file(identifier)
-        payload = {"url": url}
+        url, mediatype = resolve_archive_file(identifier)
+        payload = {"url": url, "mediatype": mediatype}
         cache_set(cache_key, payload)
         return jsonify(payload)
     except Exception as e:
-        return jsonify({"url": None, "error": str(e)})
+        return jsonify({"url": None, "mediatype": None, "error": str(e)})
+
+
+@app.route("/api/random")
+def api_random():
+    try:
+        item = random_archive_item()
+        if not item:
+            return jsonify({"error": "Aucun résultat au hasard, réessaie"}), 500
+        return jsonify({"result": item})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

@@ -268,6 +268,20 @@ def resolve_archive_file(identifier):
     return f"https://archive.org/download/{identifier}/{name}", mediatype
 
 
+def resolve_archive_torrent(identifier):
+    """Archive.org génère un .torrent pour (quasi) chaque item — fair-use
+    natif : le téléchargement réel passe par le client torrent de
+    l'utilisateur (pause/reprise déjà géré par le protocole, pas besoin de
+    réinventer un gestionnaire de téléchargement côté serveur)."""
+    resp = requests.get(f"https://archive.org/metadata/{identifier}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    data = resp.json()
+    for f in data.get("files", []):
+        name = f.get("name", "")
+        if name.lower().endswith(".torrent"):
+            return f"https://archive.org/download/{identifier}/{name}"
+    return None
+
+
 # ── "Surprise-moi" : pioche un item au hasard dans une collection vintage. ─
 
 RANDOM_COLLECTIONS = ["prelinger", "opensource_movies", "classic_tv", "oldtimeradio"]
@@ -406,6 +420,21 @@ HTML = """
         .fav-btn.active { color: #d4af37; }
         .fav-btn:hover { color: #e6c44a; }
 
+        .cart-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 15px;
+            color: #555;
+            cursor: pointer;
+            line-height: 1;
+            flex-shrink: 0;
+            margin-right: 4px;
+            opacity: 0.5;
+        }
+        .cart-btn.active { opacity: 1; }
+        .cart-btn:hover { opacity: 1; }
+
         .item-meta {
             font-size: 12px;
             color: #888;
@@ -500,6 +529,11 @@ HTML = """
         <div class="toolbar">
             <button id="btnSurprise">🎲 Surprise-moi</button>
             <button id="btnFavorites">★ Favoris (<span id="favCount">0</span>)</button>
+            <button id="btnCart">🧺 Panier (<span id="cartCount">0</span>)</button>
+        </div>
+        <div class="toolbar" id="cartBulkBar" style="display:none">
+            <button id="btnResolveAll">Récupérer tous les liens (.torrent en priorité)</button>
+            <button id="btnClearCart">Vider le panier</button>
         </div>
 
         <div id="results"></div>
@@ -511,7 +545,7 @@ HTML = """
     </div>
 
     <script>
-        let state = { page: 1, hasMore: false, favoritesView: false };
+        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false };
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
@@ -573,20 +607,79 @@ HTML = """
             btnEl.disabled = true;
         }
 
+        // ── Panier : liens vers les documents (torrent en priorité pour
+        // archive.org — fair-use, reprise/pause déjà gérées par le client
+        // torrent de l'utilisateur ; lien direct sinon). ──────────────────
+        function getCart() {
+            try { return JSON.parse(localStorage.getItem("archiveCart") || "[]"); }
+            catch (e) { return []; }
+        }
+        function setCart(list) {
+            localStorage.setItem("archiveCart", JSON.stringify(list));
+            document.getElementById("cartCount").textContent = list.length;
+        }
+        function isInCart(item) { return getCart().some(c => favKey(c) === favKey(item)); }
+        function toggleCart(i) {
+            const item = items[i];
+            const cart = getCart();
+            const idx = cart.findIndex(c => favKey(c) === favKey(item));
+            if (idx >= 0) cart.splice(idx, 1); else cart.push(item);
+            setCart(cart);
+            if (state.cartView) renderResults(getCart());
+            else {
+                const btn = document.querySelector(`.cart-btn[data-idx="${i}"]`);
+                if (btn) { btn.classList.toggle("active", isInCart(item)); btn.textContent = isInCart(item) ? "🧺" : "➕"; }
+            }
+        }
+
+        async function resolveCartLink(i, btnEl) {
+            const item = items[i];
+            btnEl.textContent = "…";
+            try {
+                if (item.source === "archive.org") {
+                    const tres = await fetch(`/api/torrent/${encodeURIComponent(item.identifier)}`);
+                    const tdata = await tres.json();
+                    if (tdata.url) {
+                        btnEl.outerHTML = `<a href="${tdata.url}" class="item-link" download>⬇ .torrent</a>`;
+                        return;
+                    }
+                    const fres = await fetch(`/api/file/${encodeURIComponent(item.identifier)}`);
+                    const fdata = await fres.json();
+                    if (fdata.url) {
+                        btnEl.outerHTML = `<a href="${fdata.url}" target="_blank" class="item-link">Lien direct</a>`;
+                        return;
+                    }
+                    btnEl.outerHTML = `<a href="${item.url}" target="_blank" class="item-link">Voir la fiche</a>`;
+                    return;
+                }
+                btnEl.outerHTML = `<a href="${item.url}" target="_blank" class="item-link">Télécharger</a>`;
+            } catch (e) {
+                btnEl.textContent = "Erreur — réessayer";
+            }
+        }
+
         function itemCard(item, i) {
             const fav = isFavorite(item);
+            const cart = isInCart(item);
+            const cartAction = state.cartView
+                ? `<button class="item-link" onclick="resolveCartLink(${i}, this)">Récupérer le lien</button>`
+                : "";
             return `
                 <div class="item">
                     ${item.thumbnail ? `<img class="item-thumb" src="${item.thumbnail}" loading="lazy" onerror="this.style.display='none'">` : ""}
                     <div class="item-title-row">
                         <div class="item-title">${item.title}</div>
-                        <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
+                        <div>
+                            <button class="cart-btn ${cart ? "active" : ""}" data-idx="${i}" onclick="toggleCart(${i})" title="Panier">${cart ? "🧺" : "➕"}</button>
+                            <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
+                        </div>
                     </div>
                     <div class="item-meta"><span class="src">${item.source}</span> · ${item.year || item.type} · ${item.creator || "N/A"}</div>
                     <div class="item-desc">${item.description || ""}</div>
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
-                        ${item.source === "archive.org" ? `<button class="item-link" onclick="resolveDirectUrl(items[${i}], this)">Fichier direct</button>` : ""}
+                        ${item.source === "archive.org" ? `<button class="item-link" onclick="resolveDirectUrl(items[${i}], this)">▶ Lire ici</button>` : ""}
+                        ${cartAction}
                     </div>
                 </div>
             `;
@@ -624,6 +717,8 @@ HTML = """
         async function search(page, pushHistory) {
             if (pushHistory === undefined) pushHistory = true;
             state.favoritesView = false;
+            state.cartView = false;
+            syncViewToggles();
             const p = currentParams();
             if (!p.q) { alert("Entrez un terme de recherche"); return; }
             state.page = page;
@@ -666,16 +761,54 @@ HTML = """
             if (e.key === "Enter") search(1);
         });
 
+        function syncViewToggles() {
+            document.getElementById("btnFavorites").classList.toggle("on", state.favoritesView);
+            document.getElementById("btnCart").classList.toggle("on", state.cartView);
+            document.getElementById("cartBulkBar").style.display = state.cartView ? "flex" : "none";
+        }
+
         document.getElementById("btnFavorites").addEventListener("click", () => {
             state.favoritesView = !state.favoritesView;
-            document.getElementById("btnFavorites").classList.toggle("on", state.favoritesView);
+            state.cartView = false;
+            syncViewToggles();
             document.getElementById("pagination").style.display = "none";
             if (state.favoritesView) renderResults(getFavorites());
             else document.getElementById("results").innerHTML = "";
         });
 
+        document.getElementById("btnCart").addEventListener("click", () => {
+            state.cartView = !state.cartView;
+            state.favoritesView = false;
+            syncViewToggles();
+            document.getElementById("pagination").style.display = "none";
+            if (state.cartView) renderResults(getCart());
+            else document.getElementById("results").innerHTML = "";
+        });
+
+        document.getElementById("btnClearCart").addEventListener("click", () => {
+            setCart([]);
+            renderResults(getCart());
+        });
+
+        document.getElementById("btnResolveAll").addEventListener("click", async () => {
+            const btn = document.getElementById("btnResolveAll");
+            btn.disabled = true;
+            // Séquentiel + petite pause : plusieurs déclenchements de
+            // téléchargement d'affilée depuis un seul clic peuvent se faire
+            // bloquer par le navigateur — un par un reste fiable.
+            const buttons = [...document.querySelectorAll(".item-links button")].filter(b => b.textContent.includes("Récupérer le lien"));
+            for (const b of buttons) {
+                const idx = parseInt(b.closest(".item").querySelector(".cart-btn").dataset.idx, 10);
+                await resolveCartLink(idx, b);
+                await new Promise(r => setTimeout(r, 400));
+            }
+            btn.disabled = false;
+        });
+
         document.getElementById("btnSurprise").addEventListener("click", async () => {
             state.favoritesView = false;
+            state.cartView = false;
+            syncViewToggles();
             document.getElementById("pagination").style.display = "none";
             document.getElementById("results").innerHTML = '<div class="loading">🎲 Pioche en cours...</div>';
             try {
@@ -692,8 +825,9 @@ HTML = """
             if (e.state) { applyParams(e.state); search(e.state.page || 1, false); }
         });
 
-        // Init : favoris + recherche depuis l'URL si présente.
+        // Init : favoris + panier + recherche depuis l'URL si présente.
         setFavorites(getFavorites());
+        setCart(getCart());
         (function initFromUrl() {
             const p = Object.fromEntries(new URLSearchParams(location.search));
             if (p.q) {
@@ -758,6 +892,21 @@ def api_file(identifier):
         return jsonify(payload)
     except Exception as e:
         return jsonify({"url": None, "mediatype": None, "error": str(e)})
+
+
+@app.route("/api/torrent/<path:identifier>")
+def api_torrent(identifier):
+    cache_key = ("torrent", identifier)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        url = resolve_archive_torrent(identifier)
+        payload = {"url": url}
+        cache_set(cache_key, payload)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"url": None, "error": str(e)})
 
 
 @app.route("/api/random")

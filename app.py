@@ -492,6 +492,66 @@ HTML = """
         .toolbar button { background: #1a2840; color: #4a9eff; }
         .toolbar button:hover { background: #2a3860; color: #6ab3ff; }
         .toolbar button.on { background: #d4af37; color: #0a0e27; }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+        .modal-box {
+            background: #0f1428;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 600px;
+            width: 100%;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .modal-header h2 { color: #d4af37; font-size: 18px; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 0;
+        }
+        .modal-close:hover { color: #fff; }
+        #modalLinksList { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+        .link-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #1a1f3a;
+            border-radius: 6px;
+        }
+        .link-row-title { flex: 1; font-size: 13px; color: #e0e0e0; }
+        .link-row-tag {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 3px 6px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        .link-row-tag.torrent { background: #2a4a2a; color: #6fd66f; }
+        .link-row-tag.direct { background: #1a2840; color: #4a9eff; }
+        .link-row-tag.fiche { background: #3a2a1a; color: #d4af37; }
+        .modal-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 10px; }
     </style>
 </head>
 <body>
@@ -533,6 +593,7 @@ HTML = """
         </div>
         <div class="toolbar" id="cartBulkBar" style="display:none">
             <button id="btnResolveAll">Récupérer tous les liens (.torrent en priorité)</button>
+            <button id="btnShowLinks">🔗 Liens récupérés (<span id="linksCount">0</span>)</button>
             <button id="btnClearCart">Vider le panier</button>
         </div>
 
@@ -544,8 +605,21 @@ HTML = """
         </div>
     </div>
 
+    <div class="modal-overlay" id="linksModal" style="display:none">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2>🔗 Liens récupérés</h2>
+                <button id="btnCloseModal" class="modal-close">✕</button>
+            </div>
+            <div id="modalLinksList"></div>
+            <div class="modal-actions">
+                <button id="btnCopyAllLinks">Copier tous les liens</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false };
+        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [] };
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
@@ -632,30 +706,79 @@ HTML = """
             }
         }
 
-        async function resolveCartLink(i, btnEl) {
-            const item = items[i];
-            btnEl.textContent = "…";
+        // Résout un item du panier vers son meilleur lien (torrent > direct >
+        // fiche), sans toucher au DOM — pur pour être réutilisable par le
+        // bouton individuel et par la résolution en masse.
+        async function resolveCartItem(item) {
             try {
                 if (item.source === "archive.org") {
                     const tres = await fetch(`/api/torrent/${encodeURIComponent(item.identifier)}`);
                     const tdata = await tres.json();
-                    if (tdata.url) {
-                        btnEl.outerHTML = `<a href="${tdata.url}" class="item-link" download>⬇ .torrent</a>`;
-                        return;
-                    }
+                    if (tdata.url) return { type: "torrent", url: tdata.url, label: "⬇ .torrent" };
                     const fres = await fetch(`/api/file/${encodeURIComponent(item.identifier)}`);
                     const fdata = await fres.json();
-                    if (fdata.url) {
-                        btnEl.outerHTML = `<a href="${fdata.url}" target="_blank" class="item-link">Lien direct</a>`;
-                        return;
-                    }
-                    btnEl.outerHTML = `<a href="${item.url}" target="_blank" class="item-link">Voir la fiche</a>`;
-                    return;
+                    if (fdata.url) return { type: "direct", url: fdata.url, label: "Lien direct" };
+                    return { type: "fiche", url: item.url, label: "Voir la fiche" };
                 }
-                btnEl.outerHTML = `<a href="${item.url}" target="_blank" class="item-link">Télécharger</a>`;
+                return { type: "direct", url: item.url, label: "Télécharger" };
             } catch (e) {
-                btnEl.textContent = "Erreur — réessayer";
+                return null;
             }
+        }
+
+        // ── Modale des liens récupérés — vue centralisée pour tout copier/
+        // ouvrir d'un coup, plutôt que d'aller chercher chaque lien dans sa
+        // carte au milieu du panier. ────────────────────────────────────────
+        function addResolvedLink(entry) {
+            state.resolvedLinks.push(entry);
+            document.getElementById("linksCount").textContent = state.resolvedLinks.length;
+            renderLinksModal();
+        }
+        function renderLinksModal() {
+            const list = document.getElementById("modalLinksList");
+            if (state.resolvedLinks.length === 0) {
+                list.innerHTML = `<div class="loading">Aucun lien récupéré pour l'instant</div>`;
+                return;
+            }
+            list.innerHTML = state.resolvedLinks.map(l => `
+                <div class="link-row">
+                    <span class="link-row-tag ${l.type}">${l.type}</span>
+                    <span class="link-row-title">${l.title}</span>
+                    <a href="${l.url}" target="_blank" class="item-link"${l.type === "torrent" ? " download" : ""}>Ouvrir</a>
+                </div>
+            `).join("");
+        }
+        function openLinksModal() {
+            renderLinksModal();
+            document.getElementById("linksModal").style.display = "flex";
+        }
+        document.getElementById("btnCloseModal").addEventListener("click", () => {
+            document.getElementById("linksModal").style.display = "none";
+        });
+        document.getElementById("linksModal").addEventListener("click", (e) => {
+            if (e.target.id === "linksModal") document.getElementById("linksModal").style.display = "none";
+        });
+        document.getElementById("btnShowLinks").addEventListener("click", openLinksModal);
+        document.getElementById("btnCopyAllLinks").addEventListener("click", () => {
+            const text = state.resolvedLinks.map(l => l.url).join("\\n");
+            navigator.clipboard.writeText(text);
+            const btn = document.getElementById("btnCopyAllLinks");
+            const original = btn.textContent;
+            btn.textContent = "Copié !";
+            setTimeout(() => { btn.textContent = original; }, 1500);
+        });
+
+        async function resolveCartLink(i, btnEl) {
+            const item = items[i];
+            btnEl.textContent = "…";
+            const resolved = await resolveCartItem(item);
+            if (!resolved) {
+                btnEl.textContent = "Erreur — réessayer";
+                return;
+            }
+            btnEl.outerHTML = `<a href="${resolved.url}" class="item-link"${resolved.type === "torrent" ? " download" : ' target="_blank"'}>${resolved.label}</a>`;
+            addResolvedLink({ title: item.title, type: resolved.type, url: resolved.url });
+            openLinksModal();
         }
 
         function itemCard(item, i) {
@@ -795,14 +918,24 @@ HTML = """
             btn.disabled = true;
             // Séquentiel + petite pause : plusieurs déclenchements de
             // téléchargement d'affilée depuis un seul clic peuvent se faire
-            // bloquer par le navigateur — un par un reste fiable.
+            // bloquer par le navigateur — un par un reste fiable. La modale
+            // ne s'ouvre qu'une fois à la fin, pas à chaque item résolu.
             const buttons = [...document.querySelectorAll(".item-links button")].filter(b => b.textContent.includes("Récupérer le lien"));
             for (const b of buttons) {
                 const idx = parseInt(b.closest(".item").querySelector(".cart-btn").dataset.idx, 10);
-                await resolveCartLink(idx, b);
+                const item = items[idx];
+                b.textContent = "…";
+                const resolved = await resolveCartItem(item);
+                if (resolved) {
+                    b.outerHTML = `<a href="${resolved.url}" class="item-link"${resolved.type === "torrent" ? " download" : ' target="_blank"'}>${resolved.label}</a>`;
+                    addResolvedLink({ title: item.title, type: resolved.type, url: resolved.url });
+                } else {
+                    b.textContent = "Erreur";
+                }
                 await new Promise(r => setTimeout(r, 400));
             }
             btn.disabled = false;
+            openLinksModal();
         });
 
         document.getElementById("btnSurprise").addEventListener("click", async () => {

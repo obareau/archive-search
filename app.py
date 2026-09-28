@@ -7,6 +7,8 @@ import os
 import random
 import re
 import time
+from urllib.parse import quote
+
 import requests
 from flask import Flask, render_template_string, request, jsonify
 
@@ -479,6 +481,19 @@ HTML = """
         .loading { text-align: center; padding: 40px; color: #888; }
         .error { color: #ff6b6b; padding: 16px; background: #1a2525; border-radius: 6px; }
 
+        /* Renvoi vers une source qu'on ne peut pas interroger depuis le serveur :
+           l'encart doit expliquer pourquoi la liste reste vide, sinon on croit
+           que la recherche a échoué. */
+        .renvoi { padding: 22px; background: #1a2525; border-radius: 6px; line-height: 1.7; }
+        .renvoi h3 { margin: 0 0 10px; font-size: 16px; color: #e8e4dc; }
+        .renvoi p { margin: 0 0 14px; color: #9aa; font-size: 14px; }
+        .renvoi a.go {
+            display: inline-block; padding: 10px 18px; background: #2d6a4f; color: #fff;
+            border-radius: 6px; text-decoration: none; font-weight: 600;
+        }
+        .renvoi a.go:hover { background: #38856a; }
+        .renvoi .pourquoi { font-size: 12px; color: #6a7a7a; margin-top: 14px; }
+
         .pagination {
             display: flex;
             justify-content: center;
@@ -565,6 +580,7 @@ HTML = """
                 <option value="gutenberg">Gutenberg (livres)</option>
                 <option value="wikimedia">Wikimedia Commons</option>
                 <option value="librivox">LibriVox (audio livres)</option>
+                <option value="loc.gov">Library of Congress (audio) ↗</option>
             </select>
             <select id="type">
                 <option value="">Tous types</option>
@@ -623,7 +639,8 @@ HTML = """
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
-            const isArchive = document.getElementById("source").value === "archive.org";
+            const src = document.getElementById("source").value;
+            const isArchive = src === "archive.org";
             document.getElementById("type").style.display = isArchive ? "" : "none";
             document.getElementById("collection").style.display = isArchive ? "" : "none";
             document.getElementById("sort").style.display = isArchive ? "" : "none";
@@ -854,6 +871,29 @@ HTML = """
             document.getElementById("results").innerHTML = '<div class="loading">⏳ Recherche...</div>';
             document.getElementById("pagination").style.display = "none";
 
+            // La Library of Congress place tout son site derrière un défi
+            // Cloudflare : un serveur ne peut pas l'interroger, seul un
+            // navigateur passe. On renvoie donc la recherche chez eux plutôt que
+            // de faire semblant — et on dit pourquoi, pour que la liste vide ne
+            // passe pas pour une panne.
+            if (p.source === "loc.gov") {
+                const cible = `https://www.loc.gov/audio/?q=${encodeURIComponent(p.q)}`;
+                document.getElementById("results").innerHTML = `
+                    <div class="renvoi">
+                        <h3>↗ Library of Congress — « ${p.q.replace(/[<>&]/g, "")} »</h3>
+                        <p>Leur fonds audio ne peut pas être interrogé depuis ce serveur.
+                           La recherche s'ouvre chez eux, dans un onglet.</p>
+                        <a class="go" href="${cible}" target="_blank" rel="noopener">Ouvrir sur loc.gov ↗</a>
+                        <div class="pourquoi">
+                            loc.gov protège tout son site par un défi JavaScript (Cloudflare) :
+                            il répond 403 à un programme, y compris sur sa propre documentation
+                            d'API. Un navigateur le passe sans rien avoir à faire. Ni panier ni
+                            lecteur intégré pour cette source — les résultats vivent chez eux.
+                        </div>
+                    </div>`;
+                return;
+            }
+
             try {
                 const res = await fetch(`/api/search?${new URLSearchParams({ ...p, page }).toString()}`);
                 const data = await res.json();
@@ -992,6 +1032,18 @@ def api_search():
 
     if not query:
         return jsonify({"error": "Requête vide"})
+
+    # loc.gov ne s'interroge pas depuis un serveur : tout leur site répond 403
+    # derrière un défi Cloudflare, y compris leur documentation d'API. La page
+    # renvoie l'usager chez eux ; si quelqu'un appelle quand même cette route
+    # (URL partagée, historique), autant dire pourquoi plutôt que « source
+    # inconnue ».
+    if source == "loc.gov":
+        return jsonify({
+            "error": "loc.gov ne peut pas être interrogé depuis le serveur "
+                     "(défi Cloudflare) — la recherche s'ouvre sur leur site.",
+            "handoff": f"https://www.loc.gov/audio/?q={quote(query)}",
+        }), 501
 
     search_fn = SOURCES.get(source)
     if not search_fn:

@@ -31,6 +31,24 @@ Sans clé, la source répond par un message qui le dit, plutôt que zéro résul
 ⚠️ L'API ne livre que la **prévisualisation mp3**, pas le fichier d'origine :
 celui-ci exige OAuth2, pas le simple jeton.
 
+## Propositions connexes
+
+Sous la barre de recherche, trois familles de suggestions dérivées **des
+résultats déjà obtenus** — aucun appel réseau de plus, et ça marche pour les
+sources sans API de suggestion :
+
+- **Affiner** — mots-clés récurrents (`subject` d'archive.org, `tags` de
+  Freesound, mots des titres ailleurs)
+- **Auteur** — contributeurs qui reviennent
+- **Année** — pour rester dans une époque
+
+Un clic relance la recherche sur la **même source**.
+
+⚠️ Deux filtres appris en testant : un terme vu une seule fois sur vingt
+résultats n'est pas un thème (seuil à 2), et les horodatages des descriptions
+archive.org (`00am`, `01pm`) sont écartés — mais pas `16mm` ni `super8`, qui
+sont de vrais termes pour un fonds film.
+
 ## Panier, favoris et téléchargement
 
 Panier et favoris vivent **côté serveur** (`~/.local/share/archive-search/`),
@@ -41,11 +59,23 @@ nettoyage du cache du navigateur. Route générique `/api/list/<cart|favorites>`
 second qui reste. Pas de fusion : à cette échelle elle coûterait plus cher que
 le problème qu'elle éviterait.
 
-Le bouton **⬇ Tout télécharger** écrit sur le disque du serveur, dans
-`~/archive-search-downloads/<horodatage>/<source>/`. Un navigateur ne peut pas
-ranger des fichiers dans un dossier choisi — c'est tout l'intérêt de passer par
-le serveur. Écriture en `.part` renommé à la fin, donc rien d'incomplet ne porte
-le nom final.
+Le bouton **⬇ Télécharger…** ouvre un **navigateur de dossiers** (`<dialog>`
+natif : Échap, piège de focus, fond inerte) — fil d'Ariane, entrée dans les
+sous-dossiers, création d'un dossier sur place. Les fichiers partent ensuite sur
+le disque du serveur, sous `~/archive-search-downloads/`, avec une barre de
+progression et trois tentatives en cas d'erreur réseau.
+
+⚠️ Un navigateur ne peut PAS ouvrir le sélecteur de dossiers du système pour le
+disque du serveur : `showDirectoryPicker()` viserait la machine cliente, et
+n'existe qu'en HTTPS sur Chromium. D'où la navigation côté serveur.
+
+⚠️ La destination est validée côté serveur : `../../.ssh` est refusé, un chemin
+absolu est traité comme relatif. Le champ vient du navigateur, il n'est jamais
+pris pour argent comptant.
+
+Par défaut, depuis la racine, le lot va dans un sous-dossier horodaté
+`<AAAA-MM-JJ_HHMM>/<source>/`. Écriture en `.part` renommé à la fin, donc rien
+d'incomplet ne porte le nom final, et les doublons de titre sont suffixés.
 
 ⚠️ **Seules archive.org et Freesound donnent un vrai fichier.** Gutenberg,
 Wikimedia et LibriVox ne renvoient qu'une page web : ces items sont ignorés, et

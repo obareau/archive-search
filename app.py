@@ -91,7 +91,7 @@ def search_archive_org(query, search_type, page, sort="", collection=""):
 
     params = {
         "q": q,
-        "fl": "identifier,title,creator,year,mediatype,description",
+        "fl": "identifier,title,creator,year,mediatype,description,subject",
         "output": "json",
         "rows": ROWS_PER_PAGE,
         "page": page,
@@ -116,6 +116,7 @@ def search_archive_org(query, search_type, page, sort="", collection=""):
             "thumbnail": f"https://archive.org/services/img/{identifier}" if identifier else "",
             "source": "archive.org",
             "identifier": identifier,
+            "keywords": [str(x) for x in (doc.get("subject") or ([] if doc.get("subject") is None else [doc["subject"]]))][:12],
         })
     return results, total
 
@@ -239,7 +240,7 @@ def search_freesound(query, _search_type, page, _sort="", _collection=""):
     params = {
         "query": query, "page": page, "page_size": ROWS_PER_PAGE,
         # `previews` porte le mp3 écoutable, `images` la forme d'onde.
-        "fields": "id,name,username,description,previews,images,duration,license,url,created",
+        "fields": "id,name,username,description,previews,images,duration,license,url,created,tags",
         "token": token,
     }
     resp = requests.get("https://freesound.org/apiv2/search/text/", params=params,
@@ -262,6 +263,7 @@ def search_freesound(query, _search_type, page, _sort="", _collection=""):
             "thumbnail": (snd.get("images") or {}).get("waveform_m", ""),
             "source": "freesound",
             "identifier": str(snd.get("id", "")),
+            "keywords": [str(t) for t in (snd.get("tags") or [])][:12],
             # Écoutable sans second appel : l'API donne déjà le mp3.
             "preview": previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3") or "",
         })
@@ -373,254 +375,234 @@ HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Archive Search</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #0a0e27;
-            color: #e0e0e0;
-            padding: 20px;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { color: #d4af37; margin-bottom: 30px; text-align: center; }
+/* Outil d'archive : dense, neutre, un seul accent. Le gris porte une légère
+   dérive bleutée — un gris parfaitement neutre a l'air non choisi. */
+:root {
+    --bg: #101214;
+    --panel: #171a1d;
+    --panel-2: #1d2125;
+    --line: #2a2f35;
+    --line-soft: #22262b;
+    --text: #e6e8ea;
+    --muted: #9099a3;
+    --accent: #c9893f;          /* ambre sourd : lisible sur fond sombre */
+    --accent-soft: rgba(201, 137, 63, .12);
+    --ok: #4f9a63;
+    --err: #c0564a;
+    --radius: 6px;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color-scheme: dark;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1320px; margin: 0 auto; padding: 0 20px 48px; }
 
-        .search-box {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
+/* ── En-tête : une barre d'application, pas un titre centré ─────────────── */
+.appbar {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(16, 18, 20, .92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 20px;
+}
+.appbar-inner {
+    max-width: 1320px; margin: 0 auto; padding: 12px 20px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.brand {
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+    white-space: nowrap;
+}
+h1 { display: none; }
 
-        input, select, button {
-            padding: 12px 16px;
-            border: 1px solid #333;
-            border-radius: 6px;
-            background: #1a1f3a;
-            color: #e0e0e0;
-            font-size: 14px;
-        }
+/* ── Contrôles ─────────────────────────────────────────────────────────── */
+input, select, button, textarea {
+    font-family: inherit; font-size: 13px;
+    padding: 8px 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel-2);
+    color: var(--text);
+    transition: border-color .12s, background .12s, color .12s;
+}
+input::placeholder { color: var(--muted); }
+input:hover, select:hover, button:hover { border-color: #3a424b; }
+button { cursor: pointer; font-weight: 500; }
+button:hover { color: var(--accent); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: .4; cursor: default; color: var(--muted); }
+:where(input, select, button, a, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+}
+/* Une seule action primaire par barre — sinon plus rien ne ressort. */
+.primary { background: var(--accent); border-color: var(--accent); color: #17120b; font-weight: 600; }
+.primary:hover { background: #d89a52; border-color: #d89a52; color: #17120b; }
 
-        input { flex: 1; min-width: 200px; }
-        button {
-            background: #d4af37;
-            color: #0a0e27;
-            font-weight: 600;
-            cursor: pointer;
-        }
-        button:hover { background: #e6c44a; }
-        button:disabled { opacity: 0.35; cursor: default; background: #555; color: #aaa; }
+.search-box { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; min-width: 280px; }
+.search-box input { flex: 1; min-width: 200px; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+.count { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
-        select { min-width: 150px; }
+/* ── Résultats ─────────────────────────────────────────────────────────── */
+.results {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+    gap: 14px;
+}
+.item {
+    background: var(--panel);
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    padding: 0 0 12px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    transition: border-color .15s, background .15s;
+}
+.item:hover { border-color: var(--line); background: var(--panel-2); }
+.item-thumb {
+    width: 100%; height: 150px; object-fit: cover; display: block;
+    background: #0b0d0f; border-bottom: 1px solid var(--line-soft);
+    margin: 0;
+}
+.item > *:not(.item-thumb):not(.item-player) { margin-left: 13px; margin-right: 13px; }
+.item-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-top: 12px; }
+.item-title { font-weight: 600; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.item-meta {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-top: 5px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.item-meta .src {
+    background: var(--accent-soft); color: var(--accent);
+    padding: 1px 6px; border-radius: 3px; letter-spacing: .04em;
+}
+.item-desc {
+    font-size: 12.5px; color: var(--muted); margin-top: 8px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.item-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.item-link {
+    font-size: 12px; padding: 5px 9px; border-radius: var(--radius);
+    border: 1px solid var(--line); background: transparent; color: var(--text);
+    text-decoration: none; cursor: pointer;
+}
+.item-link:hover { border-color: var(--accent); color: var(--accent); }
+.item-player { width: calc(100% - 26px); margin: 10px 13px 0; height: 32px; display: block; }
+.fav-btn, .cart-btn {
+    background: none; border: none; padding: 2px 4px; font-size: 15px;
+    color: var(--muted); opacity: .75;
+}
+.fav-btn:hover, .cart-btn:hover, .fav-btn.active, .cart-btn.active { opacity: 1; color: var(--accent); }
 
-        .results {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
-        }
+.error, .empty { color: var(--muted); padding: 28px; text-align: center; border: 1px dashed var(--line); border-radius: 8px; }
+.loading { color: var(--muted); padding: 28px; text-align: center; }
+.pagination { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 22px; }
+#pageInfo { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
-        .item {
-            background: #0f1428;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 16px;
-            transition: all 0.2s;
-            display: flex;
-            flex-direction: column;
-        }
+/* Propositions connexes : une bande discrète, jamais un bloc qui pousse les
+   résultats hors de l'écran. */
+.related { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 14px; }
+.related-label {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .1em; color: var(--muted); margin-right: 2px;
+}
+.rel {
+    font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    cursor: pointer; font-family: inherit;
+}
+.rel:hover { border-color: var(--accent); color: var(--accent); }
+.rel.who { border-style: dashed; }
+.rel.when { font-family: var(--mono); }
 
-        .item:hover {
-            background: #151a38;
-            border-color: #d4af37;
-            box-shadow: 0 4px 12px rgba(212, 175, 55, 0.1);
-        }
+/* ── Téléchargement ────────────────────────────────────────────────────── */
+.dl-wrap { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.dl-line { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.dl-line .dl-file { color: var(--muted); font-family: var(--mono); font-size: 11.5px;
+                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-bar { height: 4px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.dl-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+.dl-fill.err { background: var(--err); }
+.dl-fill.done { background: var(--ok); }
+.dl-sub { font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
 
-        .item-thumb {
-            width: 100%;
-            height: 160px;
-            object-fit: cover;
-            border-radius: 6px;
-            margin-bottom: 10px;
-            background: #060812;
-        }
+/* ── Dialogues natifs : <dialog> apporte Échap, le piège de focus et le
+      fond inerte sans une ligne de script. ──────────────────────────────── */
+dialog {
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel); color: var(--text);
+    padding: 0; width: min(560px, calc(100vw - 32px));
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+}
+dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
+.dlg-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--line);
+}
+.dlg-head h2 { font-size: 14px; font-weight: 600; }
+.dlg-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.dlg-foot {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel-2);
+}
+.dlg-close { background: none; border: none; color: var(--muted); font-size: 16px; padding: 2px 6px; }
+.dlg-close:hover { color: var(--text); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .1em; color: var(--muted);
+}
 
-        .item-title-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
+/* Fil d'Ariane + liste de dossiers : le comportement d'un sélecteur système. */
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-family: var(--mono); font-size: 11.5px; }
+.crumb { background: none; border: none; color: var(--accent); padding: 2px 4px; font-family: inherit; font-size: inherit; }
+.crumb:hover { text-decoration: underline; color: var(--accent); }
+.crumb-sep { color: var(--muted); }
+.crumb.current { color: var(--text); cursor: default; }
+.dir-list {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--bg); max-height: 240px; overflow-y: auto;
+}
+.dir-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; padding: 8px 11px; background: none; border: none;
+    border-bottom: 1px solid var(--line-soft); color: var(--text);
+    font-size: 13px; text-align: left; border-radius: 0;
+}
+.dir-row:last-child { border-bottom: none; }
+.dir-row:hover { background: var(--panel-2); color: var(--text); }
+.dir-row[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+.dir-row .n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.dir-empty { padding: 20px; text-align: center; color: var(--muted); font-size: 12.5px; }
+.dest { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.dest b { color: var(--text); font-weight: 500; }
 
-        .item-title {
-            font-weight: 600;
-            color: #fff;
-        }
+#modalLinksList { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
 
-        .fav-btn {
-            background: none;
-            border: none;
-            padding: 0;
-            font-size: 18px;
-            color: #555;
-            cursor: pointer;
-            line-height: 1;
-            flex-shrink: 0;
-        }
-        .fav-btn.active { color: #d4af37; }
-        .fav-btn:hover { color: #e6c44a; }
-
-        .cart-btn {
-            background: none;
-            border: none;
-            padding: 0;
-            font-size: 15px;
-            color: #555;
-            cursor: pointer;
-            line-height: 1;
-            flex-shrink: 0;
-            margin-right: 4px;
-            opacity: 0.5;
-        }
-        .cart-btn.active { opacity: 1; }
-        .cart-btn:hover { opacity: 1; }
-
-        .item-meta {
-            font-size: 12px;
-            color: #888;
-            margin-bottom: 8px;
-        }
-        .item-meta .src {
-            color: #d4af37;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 10px;
-        }
-
-        .item-desc {
-            font-size: 13px;
-            color: #aaa;
-            margin-bottom: 12px;
-            line-height: 1.4;
-            flex: 1;
-        }
-
-        .item-links { display: flex; gap: 8px; }
-
-        .item-link {
-            display: inline-block;
-            padding: 6px 12px;
-            background: #1a2840;
-            color: #4a9eff;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-
-        .item-link:hover {
-            background: #2a3860;
-            color: #6ab3ff;
-        }
-
-        .item-player { width: 100%; margin-top: 10px; border-radius: 6px; background: #000; }
-        audio.item-player { height: 36px; }
-
-        .loading { text-align: center; padding: 40px; color: #888; }
-        .error { color: #ff6b6b; padding: 16px; background: #1a2525; border-radius: 6px; }
-
-        /* Renvoi vers une source qu'on ne peut pas interroger depuis le serveur :
-           l'encart doit expliquer pourquoi la liste reste vide, sinon on croit
-           que la recherche a échoué. */
-        .renvoi { padding: 22px; background: #1a2525; border-radius: 6px; line-height: 1.7; }
-        .renvoi h3 { margin: 0 0 10px; font-size: 16px; color: #e8e4dc; }
-        .renvoi p { margin: 0 0 14px; color: #9aa; font-size: 14px; }
-        .renvoi a.go {
-            display: inline-block; padding: 10px 18px; background: #2d6a4f; color: #fff;
-            border-radius: 6px; text-decoration: none; font-weight: 600;
-        }
-        .renvoi a.go:hover { background: #38856a; }
-        .renvoi .pourquoi { font-size: 12px; color: #6a7a7a; margin-top: 14px; }
-
-        .pagination {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 16px;
-            margin-top: 24px;
-        }
-        .pagination span { color: #888; font-size: 13px; }
-
-        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-        .toolbar button { background: #1a2840; color: #4a9eff; }
-        .toolbar button:hover { background: #2a3860; color: #6ab3ff; }
-        .toolbar button.on { background: #d4af37; color: #0a0e27; }
-
-        .modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.6);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            padding: 20px;
-        }
-        .modal-box {
-            background: #0f1428;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 20px;
-            max-width: 600px;
-            width: 100%;
-            max-height: 80vh;
-            display: flex;
-            flex-direction: column;
-        }
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-        .modal-header h2 { color: #d4af37; font-size: 18px; }
-        .modal-close {
-            background: none;
-            border: none;
-            color: #888;
-            font-size: 18px;
-            cursor: pointer;
-            padding: 0;
-        }
-        .modal-close:hover { color: #fff; }
-        #modalLinksList { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
-        .link-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px;
-            background: #1a1f3a;
-            border-radius: 6px;
-        }
-        .link-row-title { flex: 1; font-size: 13px; color: #e0e0e0; }
-        .link-row-tag {
-            font-size: 10px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 3px 6px;
-            border-radius: 3px;
-            flex-shrink: 0;
-        }
-        .link-row-tag.torrent { background: #2a4a2a; color: #6fd66f; }
-        .link-row-tag.direct { background: #1a2840; color: #4a9eff; }
-        .link-row-tag.fiche { background: #3a2a1a; color: #d4af37; }
-        .modal-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 10px; }
-    </style>
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (max-width: 640px) {
+    .appbar-inner { padding: 10px 16px; }
+    .container { padding: 0 16px 36px; }
+}
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>Archive Search</h1>
-
-        <div class="search-box">
+    <header class="appbar">
+        <div class="appbar-inner">
+            <span class="brand">Archive Search</span>
+            <div class="search-box">
             <input type="text" id="query" placeholder="Chercher... (titre, auteur, etc)" value="">
             <select id="source">
                 <option value="archive.org">Archive.org</option>
@@ -648,21 +630,26 @@ HTML = """
                 <option value="date_desc">Plus récent</option>
                 <option value="downloads_desc">Plus téléchargé</option>
             </select>
-            <button onclick="search(1)">Chercher</button>
+                <button id="btnSearch" class="primary" onclick="search(1)">Chercher</button>
+            </div>
         </div>
+    </header>
+
+    <div class="container">
         <div class="toolbar">
             <button id="btnSurprise">🎲 Surprise-moi</button>
-            <button id="btnFavorites">★ Favoris (<span id="favCount">0</span>)</button>
-            <button id="btnCart">🧺 Panier (<span id="cartCount">0</span>)</button>
+            <button id="btnFavorites">★ Favoris <span class="count" id="favCount">0</span></button>
+            <button id="btnCart">🧺 Panier <span class="count" id="cartCount">0</span></button>
         </div>
         <div class="toolbar" id="cartBulkBar" style="display:none">
-            <button id="btnDownloadAll">⬇ Tout télécharger dans un dossier</button>
+            <button id="btnDownloadAll" class="primary">⬇ Télécharger…</button>
             <button id="btnResolveAll">Récupérer tous les liens (.torrent en priorité)</button>
-            <button id="btnShowLinks">🔗 Liens récupérés (<span id="linksCount">0</span>)</button>
+            <button id="btnShowLinks">🔗 Liens <span class="count" id="linksCount">0</span></button>
             <button id="btnClearCart">Vider le panier</button>
         </div>
 
         <div id="dlStatus" class="toolbar" style="display:none;gap:10px;align-items:center"></div>
+        <div class="related" id="related" style="display:none"></div>
         <div id="results"></div>
         <div class="pagination" id="pagination" style="display:none">
             <button id="btnPrev">◀ Précédent</button>
@@ -671,18 +658,45 @@ HTML = """
         </div>
     </div>
 
-    <div class="modal-overlay" id="linksModal" style="display:none">
-        <div class="modal-box">
-            <div class="modal-header">
-                <h2>🔗 Liens récupérés</h2>
-                <button id="btnCloseModal" class="modal-close">✕</button>
+    <dialog id="dirModal" aria-labelledby="dirTitle">
+        <div class="dlg-head">
+            <h2 id="dirTitle">Choisir la destination</h2>
+            <button class="dlg-close" data-close="dirModal" aria-label="Fermer">&#10005;</button>
+        </div>
+        <div class="dlg-body">
+            <div class="field">
+                <label>Emplacement</label>
+                <div class="crumbs" id="dirCrumbs"></div>
             </div>
-            <div id="modalLinksList"></div>
-            <div class="modal-actions">
-                <button id="btnCopyAllLinks">Copier tous les liens</button>
+            <div class="dir-list" id="dirList"></div>
+            <div class="field">
+                <label for="newDirName">Nouveau dossier ici</label>
+                <div style="display:flex;gap:8px">
+                    <input type="text" id="newDirName" placeholder="nom du dossier" style="flex:1">
+                    <button id="btnMkdir">Créer</button>
+                </div>
             </div>
         </div>
-    </div>
+        <div class="dlg-foot">
+            <span class="dest" id="dirDest"></span>
+            <span style="display:flex;gap:8px">
+                <button data-close="dirModal">Annuler</button>
+                <button id="btnDirGo" class="primary">Télécharger ici</button>
+            </span>
+        </div>
+    </dialog>
+
+    <dialog id="linksModal" aria-labelledby="linksTitle">
+        <div class="dlg-head">
+            <h2 id="linksTitle">Liens récupérés</h2>
+            <button class="dlg-close" data-close="linksModal" aria-label="Fermer">&#10005;</button>
+        </div>
+        <div class="dlg-body"><div id="modalLinksList"></div></div>
+        <div class="dlg-foot">
+            <span></span>
+            <button id="btnCopyAllLinks">Copier tous les liens</button>
+        </div>
+    </dialog>
 
     <script>
         let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [] };
@@ -788,8 +802,8 @@ HTML = """
             state.favorites = await loadList("favorites");
             document.getElementById("cartCount").textContent = state.cart.length;
             document.getElementById("favCount").textContent = state.favorites.length;
-            if (state.cartView) renderResults(state.cart);
-            if (state.favoritesView) renderResults(state.favorites);
+            if (state.cartView) { renderResults(state.cart); renderRelated(null); }
+            if (state.favoritesView) { renderResults(state.favorites); renderRelated(null); }
         }
         function isInCart(item) { return getCart().some(c => favKey(c) === favKey(item)); }
         function toggleCart(i) {
@@ -828,40 +842,137 @@ HTML = """
         // ── Téléchargement groupé : le serveur écrit sur disque, la page
         // ne fait que suivre. Un navigateur ne peut pas ranger des fichiers
         // dans un dossier choisi — c'est tout l'intérêt de passer par lui. ──
+        // Demander la destination AVANT de lancer : un lot de trente fichiers
+        // rangé au mauvais endroit se retrie à la main. <dialog> natif pour
+        // Échap, le piège de focus et le fond inerte — rien à écrire pour ça.
+        let dirPath = "";
+
+        function escapeAttr(v) {
+            return String(v).replace(/[&<>"']/g, c =>
+                ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+        }
+
         async function downloadAll() {
-            const cart = getCart();
-            if (!cart.length) return;
+            if (!getCart().length) return;
+            await openDir("");
+            document.getElementById("dirModal").showModal();
+        }
+
+        async function openDir(path) {
+            const list = document.getElementById("dirList");
+            try {
+                const d = await (await fetch(`/api/download/dirs?path=${encodeURIComponent(path)}`)).json();
+                if (d.error) { list.innerHTML = `<div class="dir-empty">${escapeAttr(d.error)}</div>`; return; }
+                dirPath = d.path;
+                renderCrumbs(d);
+                // Le nom voyage en data-*, jamais dans une chaîne JS : un
+                // dossier nommé « l'été » casserait un onclick interpolé.
+                list.innerHTML = d.dirs.length
+                    ? d.dirs.map(e => `<button class="dir-row" data-dir="${escapeAttr(e.name)}">
+                            <span>${escapeAttr(e.name)}</span><span class="n">${e.count}</span></button>`).join("")
+                    : '<div class="dir-empty">Dossier vide — le téléchargement se fera ici.</div>';
+                list.querySelectorAll(".dir-row").forEach(b =>
+                    b.addEventListener("click", () => openDir(dirPath ? `${dirPath}/${b.dataset.dir}` : b.dataset.dir)));
+                document.getElementById("dirDest").innerHTML =
+                    `Destination : <b>${escapeAttr(d.base + (d.path ? "/" + d.path : ""))}</b>` +
+                    (d.path ? "" : " <span>(un sous-dossier horodaté sera créé)</span>");
+            } catch (e) {
+                list.innerHTML = `<div class="dir-empty">Dossiers illisibles : ${escapeAttr(e.message)}</div>`;
+            }
+        }
+
+        function renderCrumbs(d) {
+            const parts = d.path ? d.path.split("/") : [];
+            const el = document.getElementById("dirCrumbs");
+            let acc = "";
+            const nodes = [`<button class="crumb${parts.length ? "" : " current"}" data-path="">racine</button>`];
+            parts.forEach((p, i) => {
+                acc = acc ? `${acc}/${p}` : p;
+                const last = i === parts.length - 1;
+                nodes.push('<span class="crumb-sep">/</span>');
+                nodes.push(`<button class="crumb${last ? " current" : ""}" data-path="${escapeAttr(acc)}">${escapeAttr(p)}</button>`);
+            });
+            el.innerHTML = nodes.join("");
+            el.querySelectorAll(".crumb:not(.current)").forEach(b =>
+                b.addEventListener("click", () => openDir(b.dataset.path)));
+        }
+
+        async function makeDir() {
+            const input = document.getElementById("newDirName");
+            const name = input.value.trim();
+            if (!name) return;
+            try {
+                const res = await fetch("/api/download/mkdir", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path: dirPath, name }),
+                });
+                const d = await res.json();
+                if (d.error) { alert(d.error); return; }
+                input.value = "";
+                openDir(d.path);          // on entre dans le dossier créé
+            } catch (e) { alert(e.message); }
+        }
+
+        async function startDownload() {
+            const subdir = dirPath;
+            document.getElementById("dirModal").close();
             const bar = document.getElementById("dlStatus");
             bar.style.display = "flex";
-            bar.textContent = "Démarrage…";
+            bar.innerHTML = '<div class="dl-wrap"><div class="dl-line"><span>Démarrage…</span></div></div>';
             try {
                 const res = await fetch("/api/download", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ items: cart }),
+                    body: JSON.stringify({ items: getCart(), subdir }),
                 });
                 const data = await res.json();
-                if (data.error) { bar.textContent = "✗ " + data.error; return; }
+                if (data.error) { renderDl({ error: data.error }); return; }
                 pollDownload();
-            } catch (e) { bar.textContent = "✗ " + e.message; }
+            } catch (e) { renderDl({ error: e.message }); }
+        }
+
+        function humanBytes(n) {
+            if (!n) return "";
+            const u = ["o", "Ko", "Mo", "Go"];
+            let i = 0;
+            while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+            return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+        }
+
+        function renderDl(d) {
+            const bar = document.getElementById("dlStatus");
+            if (d.error) {
+                bar.innerHTML = `<div class="dl-wrap"><div class="dl-line"><span>✗ ${d.error}</span></div>
+                    <div class="dl-bar"><div class="dl-fill err" style="width:100%"></div></div></div>`;
+                return;
+            }
+            // Progression du LOT, pas du fichier : avec des tailles très
+            // inégales, une barre par fichier sauterait sans rien dire.
+            const pct = d.total ? Math.round((d.done / d.total) * 100) : 0;
+            const sizes = d.bytes_total ? ` · ${humanBytes(d.bytes)} / ${humanBytes(d.bytes_total)}` : (d.bytes ? ` · ${humanBytes(d.bytes)}` : "");
+            const retry = d.attempt > 1 ? ` · tentative ${d.attempt}` : "";
+            const head = d.running
+                ? `⬇ ${d.done}/${d.total}`
+                : `✓ ${d.written.length} fichier(s)`;
+            const file = d.running && d.current ? `${d.current}${sizes}${retry}` : d.folder;
+            let html = `<div class="dl-wrap">
+                <div class="dl-line"><span>${head}</span><span class="dl-file" title="${file}">${file}</span></div>
+                <div class="dl-bar"><div class="dl-fill ${d.running ? "" : (d.errors.length ? "err" : "done")}" style="width:${d.running ? pct : 100}%"></div></div>`;
+            if (!d.running && d.errors.length) {
+                html += `<div class="dl-sub">${d.errors.length} ignoré(s) : ${d.errors.join(" | ")}</div>`;
+            }
+            bar.innerHTML = html + "</div>";
         }
 
         async function pollDownload() {
-            const bar = document.getElementById("dlStatus");
             try {
                 const d = await (await fetch("/api/download/status")).json();
-                const base = `${d.done}/${d.total} · ${d.folder}`;
-                if (d.running) {
-                    bar.textContent = `⬇ ${base}${d.current ? " · " + d.current : ""}`;
-                    setTimeout(pollDownload, 1000);
-                    return;
-                }
-                // Terminé : on DIT ce qui a échoué. Un panier de 12 qui rend 3
-                // fichiers sans explication passerait pour un bug.
-                let msg = `✓ ${d.written.length} fichier(s) dans ${d.folder}`;
-                if (d.errors.length) msg += ` · ${d.errors.length} ignoré(s) : ` + d.errors.join(" | ");
-                bar.textContent = msg;
-            } catch (e) { bar.textContent = "✗ suivi interrompu : " + e.message; }
+                renderDl(d);
+                // 500 ms : assez vif pour que la taille bouge visiblement sur
+                // un gros fichier, assez lent pour ne pas marteler le serveur.
+                if (d.running) setTimeout(pollDownload, 500);
+            } catch (e) { renderDl({ error: "suivi interrompu : " + e.message }); }
         }
 
         // ── Modale des liens récupérés — vue centralisée pour tout copier/
@@ -888,15 +999,10 @@ HTML = """
         }
         function openLinksModal() {
             renderLinksModal();
-            document.getElementById("linksModal").style.display = "flex";
+            const m = document.getElementById("linksModal");
+            if (!m.open) m.showModal();
         }
-        document.getElementById("btnCloseModal").addEventListener("click", () => {
-            document.getElementById("linksModal").style.display = "none";
-        });
-        document.getElementById("linksModal").addEventListener("click", (e) => {
-            if (e.target.id === "linksModal") document.getElementById("linksModal").style.display = "none";
-        });
-        document.getElementById("btnShowLinks").addEventListener("click", openLinksModal);
+                        document.getElementById("btnShowLinks").addEventListener("click", openLinksModal);
         document.getElementById("btnCopyAllLinks").addEventListener("click", () => {
             const text = state.resolvedLinks.map(l => l.url).join("\\n");
             navigator.clipboard.writeText(text);
@@ -947,6 +1053,35 @@ HTML = """
                     </div>
                 </div>
             `;
+        }
+
+        // Propositions connexes : dérivées des résultats, pas d'un service
+        // tiers. Un clic relance la recherche sur la même source — rester
+        // dans le fonds qu'on explore, plutôt que repartir de zéro.
+        function renderRelated(rel) {
+            const el = document.getElementById("related");
+            if (!rel) { el.style.display = "none"; el.innerHTML = ""; return; }
+            const groups = [
+                ["Affiner", rel.keywords || [], "", t => t],
+                ["Auteur", rel.creators || [], "who", t => `"${t}"`],
+                ["Année", rel.years || [], "when", t => t],
+            ];
+            const parts = [];
+            for (const [label, list, cls, toQuery] of groups) {
+                if (!list.length) continue;
+                parts.push(`<span class="related-label">${label}</span>`);
+                for (const t of list) {
+                    parts.push(`<button class="rel ${cls}" data-q="${escapeAttr(toQuery(t))}">${escapeAttr(t)}</button>`);
+                }
+            }
+            if (!parts.length) { el.style.display = "none"; el.innerHTML = ""; return; }
+            el.innerHTML = parts.join("");
+            el.style.display = "flex";
+            el.querySelectorAll(".rel").forEach(b => b.addEventListener("click", () => {
+                document.getElementById("query").value = b.dataset.q;
+                search(1);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+            }));
         }
 
         function renderResults(list) {
@@ -1024,10 +1159,12 @@ HTML = """
 
                 if (data.error) {
                     document.getElementById("results").innerHTML = `<div class="error">❌ ${data.error}</div>`;
+                    renderRelated(null);
                     return;
                 }
 
                 renderResults(data.results);
+                renderRelated(data.related);
 
                 state.hasMore = data.has_more;
                 document.getElementById("pagination").style.display = "flex";
@@ -1078,6 +1215,14 @@ HTML = """
         });
 
         document.getElementById("btnDownloadAll").addEventListener("click", downloadAll);
+        document.getElementById("btnDirGo").addEventListener("click", startDownload);
+        document.getElementById("btnMkdir").addEventListener("click", makeDir);
+        document.getElementById("newDirName").addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); makeDir(); }
+        });
+        // Un seul écouteur pour tous les boutons de fermeture des dialogues.
+        document.querySelectorAll("[data-close]").forEach(b =>
+            b.addEventListener("click", () => document.getElementById(b.dataset.close).close()));
         document.getElementById("btnResolveAll").addEventListener("click", async () => {
             const btn = document.getElementById("btnResolveAll");
             btn.disabled = true;
@@ -1206,8 +1351,24 @@ def api_cart():
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", Path.home() / "archive-search-downloads"))
 DOWNLOAD_CHUNK = 1 << 16
 
+DOWNLOAD_RETRIES = 3
 _dl_lock = threading.Lock()
-_dl = {"running": False, "done": 0, "total": 0, "folder": "", "current": "", "errors": [], "written": []}
+_dl = {"running": False, "done": 0, "total": 0, "folder": "", "current": "",
+       "bytes": 0, "bytes_total": 0, "attempt": 0, "errors": [], "written": []}
+
+
+def _safe_subdir(raw):
+    """Chemin de destination sous DOWNLOAD_DIR, ou None s'il en sort.
+
+    Validation obligatoire : le dossier vient du navigateur. Sans ce test,
+    « ../../.ssh » écrirait où bon lui semble sous l'utilisateur du service.
+    """
+    raw = (raw or "").strip().strip("/")
+    base = DOWNLOAD_DIR.resolve()
+    target = (base / raw).resolve() if raw else base
+    if target != base and base not in target.parents:
+        return None
+    return target
 
 
 def _safe_name(name, maxlen=90):
@@ -1257,15 +1418,43 @@ def _download_worker(items, folder):
             while dest.exists():           # deux sons peuvent porter le même titre
                 dest = sub / f"{base} ({n}){ext}"
                 n += 1
-            with requests.get(url, headers=HEADERS, stream=True, timeout=60) as r:
-                r.raise_for_status()
-                if "text/html" in (r.headers.get("Content-Type") or ""):
-                    raise RuntimeError("le serveur renvoie une page web, pas un fichier")
-                tmp = dest.with_suffix(dest.suffix + ".part")
-                with open(tmp, "wb") as fh:
-                    for chunk in r.iter_content(DOWNLOAD_CHUNK):
-                        fh.write(chunk)
-                tmp.rename(dest)           # rien d'incomplet ne porte le nom final
+            # Reprise : une coupure réseau ou un 5xx passager ne doit pas
+            # condamner un fichier au milieu d'un lot de trente.
+            last = None
+            for attempt in range(1, DOWNLOAD_RETRIES + 1):
+                with _dl_lock:
+                    _dl["attempt"] = attempt
+                    _dl["bytes"] = 0
+                    _dl["bytes_total"] = 0
+                try:
+                    with requests.get(url, headers=HEADERS, stream=True, timeout=60) as r:
+                        r.raise_for_status()
+                        if "text/html" in (r.headers.get("Content-Type") or ""):
+                            raise RuntimeError("le serveur renvoie une page web, pas un fichier")
+                        total_b = int(r.headers.get("Content-Length") or 0)
+                        with _dl_lock:
+                            _dl["bytes_total"] = total_b
+                        tmp = dest.with_suffix(dest.suffix + ".part")
+                        got = 0
+                        with open(tmp, "wb") as fh:
+                            for chunk in r.iter_content(DOWNLOAD_CHUNK):
+                                fh.write(chunk)
+                                got += len(chunk)
+                                with _dl_lock:
+                                    _dl["bytes"] = got
+                        tmp.rename(dest)   # rien d'incomplet ne porte le nom final
+                    last = None
+                    break
+                except Exception as e:
+                    last = e
+                    # Une page web n'est pas une panne passagère : réessayer
+                    # trente fois ne la transformera pas en fichier.
+                    if "page web" in str(e):
+                        break
+                    if attempt < DOWNLOAD_RETRIES:
+                        time.sleep(2 ** attempt)
+            if last:
+                raise last
             with _dl_lock:
                 _dl["written"].append(str(dest.relative_to(folder)))
         except Exception as e:
@@ -1284,16 +1473,70 @@ def api_download():
     with _dl_lock:
         if _dl["running"]:
             return jsonify({"error": "Un téléchargement est déjà en cours."}), 409
-    items = (request.get_json(silent=True) or {}).get("items") or []
+    body = request.get_json(silent=True) or {}
+    items = body.get("items") or []
     if not items:
         return jsonify({"error": "Panier vide."}), 400
-    folder = DOWNLOAD_DIR / time.strftime("%Y-%m-%d_%H%M")
+    folder = _safe_subdir(body.get("subdir"))
+    if folder is None:
+        return jsonify({"error": "Destination hors du dossier de téléchargement."}), 400
+    if not body.get("subdir"):
+        folder = folder / time.strftime("%Y-%m-%d_%H%M")
     folder.mkdir(parents=True, exist_ok=True)
     with _dl_lock:
         _dl.update(running=True, done=0, total=len(items), folder=str(folder),
-                   current="", errors=[], written=[])
+                   current="", bytes=0, bytes_total=0, attempt=0, errors=[], written=[])
     threading.Thread(target=_download_worker, args=(items, folder), daemon=True).start()
     return jsonify({"started": True, "folder": str(folder), "total": len(items)})
+
+
+@app.route("/api/download/dirs")
+def api_download_dirs():
+    """Contenu d'un dossier, pour naviguer l'arborescence comme dans une
+    boîte de dialogue. `path` est TOUJOURS relatif à DOWNLOAD_DIR : la racine
+    du serveur ne se parcourt pas depuis le navigateur."""
+    rel = request.args.get("path", "")
+    target = _safe_subdir(rel)
+    if target is None:
+        return jsonify({"error": "Chemin hors du dossier de téléchargement."}), 400
+    target.mkdir(parents=True, exist_ok=True)
+    base = DOWNLOAD_DIR.resolve()
+    entries = []
+    for child in sorted(target.iterdir(), key=lambda c: c.name.lower()):
+        if not child.is_dir():
+            continue
+        try:
+            n = sum(1 for _ in child.iterdir())
+        except OSError:
+            n = 0
+        entries.append({"name": child.name, "count": n})
+    return jsonify({
+        "base": str(base),
+        "path": "" if target == base else str(target.relative_to(base)),
+        # "" = la racine ; "." viendrait de relative_to et casserait le fil d'Ariane.
+        "parent": None if target == base else str(target.parent.relative_to(base)).replace(".", "", 1) if target.parent == base else str(target.parent.relative_to(base)),
+        "dirs": entries,
+    })
+
+
+@app.route("/api/download/mkdir", methods=["POST"])
+def api_download_mkdir():
+    """Créer un dossier depuis la boîte de dialogue, sans quitter la page."""
+    body = request.get_json(silent=True) or {}
+    parent = (body.get("path") or "").strip().strip("/")
+    name = (body.get("name") or "").strip()
+    # Un nom, pas un chemin : « ../x » doit échouer ici, pas être rattrapé
+    # plus loin par _safe_subdir.
+    if not name or "/" in name or name in (".", ".."):
+        return jsonify({"error": "Nom de dossier invalide."}), 400
+    target = _safe_subdir(f"{parent}/{name}" if parent else name)
+    if target is None:
+        return jsonify({"error": "Destination hors du dossier de téléchargement."}), 400
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"path": str(target.relative_to(DOWNLOAD_DIR.resolve()))})
 
 
 @app.route("/api/download/status")
@@ -1305,6 +1548,58 @@ def api_download_status():
 @app.route("/")
 def index():
     return render_template_string(HTML)
+
+
+# ── Propositions connexes ─────────────────────────────────────────────────
+# Dérivées des résultats DÉJÀ obtenus : aucun appel réseau de plus, et ça
+# marche pour toute source, même celles sans API de suggestion.
+# Trois familles, parce qu'elles ne servent pas la même chose : affiner le
+# sujet (mots-clés), suivre un auteur, ou rester dans la même époque.
+STOPWORDS = set("""
+le la les un une des du de d l et ou à a au aux en dans sur pour par avec sans
+sous the a an and or of in on for to with from at by is it this that
+no 01 02 03 mp3 wav flac the_ vol part no. feat remix live edit mix
+""".split())
+
+
+def _tokens(text):
+    for w in re.split(r"[^\w\u00c0-\u024f]+", (text or "").lower()):
+        # 4 lettres minimum : « the », « mix », « 02 » ne proposent rien.
+        # On écarte aussi les horodatages (« 00am », « 01pm », « 14h ») qui
+        # polluent les descriptions d'archive.org — mais PAS « 16mm » ni
+        # « super8 », qui sont de vrais termes de recherche pour un fonds film.
+        if (len(w) >= 4 and w not in STOPWORDS and not w.isdigit()
+                and not re.fullmatch(r"\d+(am|pm|h|hrs?|min|sec)", w)):
+            yield w
+
+
+def related_terms(results, query):
+    asked = set(_tokens(query))
+    kw, creators, years = {}, {}, {}
+    for r in results:
+        for k in (r.get("keywords") or []):
+            k = str(k).strip().lower()
+            if len(k) >= 3 and k not in asked and k not in STOPWORDS:
+                kw[k] = kw.get(k, 0) + 1
+        for w in _tokens(r.get("title")):
+            if w not in asked:
+                kw[w] = kw.get(w, 0) + 1
+        c = (r.get("creator") or "").strip()
+        if c and c.upper() != "N/A":
+            creators[c] = creators.get(c, 0) + 1
+        y = str(r.get("year") or "")[:4]
+        if y.isdigit():
+            years[y] = years.get(y, 0) + 1
+
+    def top(d, n, mini=2):
+        # Vu une seule fois sur vingt résultats, ce n'est pas un thème.
+        return [k for k, c in sorted(d.items(), key=lambda kv: (-kv[1], kv[0])) if c >= mini][:n]
+
+    return {
+        "keywords": top(kw, 10),
+        "creators": top(creators, 5),
+        "years": sorted(top(years, 5), reverse=True),
+    }
 
 
 @app.route("/api/search")
@@ -1343,7 +1638,8 @@ def api_search():
     try:
         results, total = search_fn(query, search_type, page, sort, collection)
         has_more = (total is not None and page * ROWS_PER_PAGE < total) or (total is None and len(results) >= ROWS_PER_PAGE)
-        payload = {"results": results, "total": total, "has_more": has_more}
+        payload = {"results": results, "total": total, "has_more": has_more,
+                   "related": related_terms(results, query)}
         cache_set(cache_key, payload)
         return jsonify(payload)
     except Exception as e:

@@ -3,11 +3,14 @@
 public, à travers plusieurs sources (archive.org, Gutenberg, Wikimedia
 Commons, LibriVox)."""
 
+import json
 import os
 import random
+import threading
 import re
 import time
-from urllib.parse import quote
+from pathlib import Path
+from urllib.parse import quote, urlparse
 
 import requests
 from flask import Flask, render_template_string, request, jsonify
@@ -222,11 +225,55 @@ def search_librivox(query, _search_type, page, _sort="", _collection=""):
     return results, None  # pas de total exploitable côté API
 
 
+def search_freesound(query, _search_type, page, _sort="", _collection=""):
+    # Freesound exige un jeton : pas de quota anonyme, même en lecture.
+    # Sans jeton on le DIT plutôt que de renvoyer zéro résultat, qui se
+    # confondrait avec « rien trouvé » (même raison que le renvoi loc.gov).
+    token = os.getenv("FREESOUND_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "Freesound demande une clé d'API. En créer une sur "
+            "https://freesound.org/apiv2/apply/ puis la poser dans "
+            "FREESOUND_TOKEN (unité systemd ou .env)."
+        )
+    params = {
+        "query": query, "page": page, "page_size": ROWS_PER_PAGE,
+        # `previews` porte le mp3 écoutable, `images` la forme d'onde.
+        "fields": "id,name,username,description,previews,images,duration,license,url,created",
+        "token": token,
+    }
+    resp = requests.get("https://freesound.org/apiv2/search/text/", params=params,
+                        headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    if resp.status_code in (401, 403):
+        raise RuntimeError("Freesound refuse la clé (401/403) — vérifier FREESOUND_TOKEN.")
+    data = resp.json()
+
+    results = []
+    for snd in data.get("results") or []:
+        previews = snd.get("previews") or {}
+        dur = snd.get("duration")
+        results.append({
+            "title": snd.get("name", "N/A"),
+            "creator": snd.get("username", "N/A"),
+            "year": (snd.get("created") or "")[:4],
+            "type": f"son · {dur:.0f}s" if isinstance(dur, (int, float)) else "son",
+            "description": strip_html(snd.get("description", ""))[:150],
+            "url": snd.get("url", ""),
+            "thumbnail": (snd.get("images") or {}).get("waveform_m", ""),
+            "source": "freesound",
+            "identifier": str(snd.get("id", "")),
+            # Écoutable sans second appel : l'API donne déjà le mp3.
+            "preview": previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3") or "",
+        })
+    return results, data.get("count")
+
+
 SOURCES = {
     "archive.org": search_archive_org,
     "gutenberg": search_gutenberg,
     "wikimedia": search_wikimedia,
     "librivox": search_librivox,
+    "freesound": search_freesound,
 }
 
 # ── Résolution du fichier direct (archive.org seulement — les autres
@@ -580,6 +627,7 @@ HTML = """
                 <option value="gutenberg">Gutenberg (livres)</option>
                 <option value="wikimedia">Wikimedia Commons</option>
                 <option value="librivox">LibriVox (audio livres)</option>
+                <option value="freesound">Freesound (sons)</option>
                 <option value="loc.gov">Library of Congress (audio) ↗</option>
             </select>
             <select id="type">
@@ -608,11 +656,13 @@ HTML = """
             <button id="btnCart">🧺 Panier (<span id="cartCount">0</span>)</button>
         </div>
         <div class="toolbar" id="cartBulkBar" style="display:none">
+            <button id="btnDownloadAll">⬇ Tout télécharger dans un dossier</button>
             <button id="btnResolveAll">Récupérer tous les liens (.torrent en priorité)</button>
             <button id="btnShowLinks">🔗 Liens récupérés (<span id="linksCount">0</span>)</button>
             <button id="btnClearCart">Vider le panier</button>
         </div>
 
+        <div id="dlStatus" class="toolbar" style="display:none;gap:10px;align-items:center"></div>
         <div id="results"></div>
         <div class="pagination" id="pagination" style="display:none">
             <button id="btnPrev">◀ Précédent</button>
@@ -635,7 +685,7 @@ HTML = """
     </div>
 
     <script>
-        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [] };
+        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [] };
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
@@ -646,15 +696,36 @@ HTML = """
             document.getElementById("sort").style.display = isArchive ? "" : "none";
         });
 
-        // ── Favoris (localStorage, pas de backend — outil perso/LAN) ──────
+        // ── Favoris et panier (stockés côté serveur, cf. /api/list) ──────────
         function favKey(item) { return `${item.source}:${item.identifier}`; }
-        function getFavorites() {
-            try { return JSON.parse(localStorage.getItem("archiveFavorites") || "[]"); }
-            catch (e) { return []; }
-        }
+        // Favoris côté serveur, comme le panier : ils suivent d'une machine à
+        // l'autre. `state.favorites` en est le miroir local, pour garder des
+        // lectures synchrones (isFavorite est appelé pour chaque carte).
+        function getFavorites() { return state.favorites; }
         function setFavorites(list) {
-            localStorage.setItem("archiveFavorites", JSON.stringify(list));
+            state.favorites = list;
             document.getElementById("favCount").textContent = list.length;
+            saveList("favorites", list);
+        }
+        // Envoi partagé par les deux listes. En tâche de fond : l'interface
+        // n'attend pas le réseau, mais un échec se DIT — sinon on croit la
+        // liste enregistrée alors qu'elle ne vit que dans cet onglet.
+        function saveList(name, list) {
+            fetch(`/api/list/${name}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ items: list }),
+            }).catch(() => {
+                const bar = document.getElementById("dlStatus");
+                bar.style.display = "flex";
+                bar.textContent = `✗ ${name === "cart" ? "Panier" : "Favoris"} non enregistrés sur le serveur — modification locale seulement.`;
+            });
+        }
+        async function loadList(name) {
+            try {
+                const d = await (await fetch(`/api/list/${name}`)).json();
+                return Array.isArray(d.items) ? d.items : [];
+            } catch (e) { return []; }
         }
         function isFavorite(item) { return getFavorites().some(f => favKey(f) === favKey(item)); }
         function toggleFavorite(i) {
@@ -701,13 +772,24 @@ HTML = """
         // ── Panier : liens vers les documents (torrent en priorité pour
         // archive.org — fair-use, reprise/pause déjà gérées par le client
         // torrent de l'utilisateur ; lien direct sinon). ──────────────────
-        function getCart() {
-            try { return JSON.parse(localStorage.getItem("archiveCart") || "[]"); }
-            catch (e) { return []; }
-        }
+        // Le panier vit sur le serveur : il suit d'une machine à l'autre et
+        // survit au nettoyage du cache. `state.cart` en est le miroir local,
+        // pour que les lectures restent synchrones partout dans la page.
+        function getCart() { return state.cart; }
         function setCart(list) {
-            localStorage.setItem("archiveCart", JSON.stringify(list));
+            state.cart = list;
             document.getElementById("cartCount").textContent = list.length;
+            saveList("cart", list);
+        }
+        // Lecture seule au démarrage : écrire ici effacerait ce qu'une autre
+        // machine a déposé, puisque le miroir local est encore vide.
+        async function loadStored() {
+            state.cart = await loadList("cart");
+            state.favorites = await loadList("favorites");
+            document.getElementById("cartCount").textContent = state.cart.length;
+            document.getElementById("favCount").textContent = state.favorites.length;
+            if (state.cartView) renderResults(state.cart);
+            if (state.favoritesView) renderResults(state.favorites);
         }
         function isInCart(item) { return getCart().some(c => favKey(c) === favKey(item)); }
         function toggleCart(i) {
@@ -741,6 +823,45 @@ HTML = """
             } catch (e) {
                 return null;
             }
+        }
+
+        // ── Téléchargement groupé : le serveur écrit sur disque, la page
+        // ne fait que suivre. Un navigateur ne peut pas ranger des fichiers
+        // dans un dossier choisi — c'est tout l'intérêt de passer par lui. ──
+        async function downloadAll() {
+            const cart = getCart();
+            if (!cart.length) return;
+            const bar = document.getElementById("dlStatus");
+            bar.style.display = "flex";
+            bar.textContent = "Démarrage…";
+            try {
+                const res = await fetch("/api/download", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ items: cart }),
+                });
+                const data = await res.json();
+                if (data.error) { bar.textContent = "✗ " + data.error; return; }
+                pollDownload();
+            } catch (e) { bar.textContent = "✗ " + e.message; }
+        }
+
+        async function pollDownload() {
+            const bar = document.getElementById("dlStatus");
+            try {
+                const d = await (await fetch("/api/download/status")).json();
+                const base = `${d.done}/${d.total} · ${d.folder}`;
+                if (d.running) {
+                    bar.textContent = `⬇ ${base}${d.current ? " · " + d.current : ""}`;
+                    setTimeout(pollDownload, 1000);
+                    return;
+                }
+                // Terminé : on DIT ce qui a échoué. Un panier de 12 qui rend 3
+                // fichiers sans explication passerait pour un bug.
+                let msg = `✓ ${d.written.length} fichier(s) dans ${d.folder}`;
+                if (d.errors.length) msg += ` · ${d.errors.length} ignoré(s) : ` + d.errors.join(" | ");
+                bar.textContent = msg;
+            } catch (e) { bar.textContent = "✗ suivi interrompu : " + e.message; }
         }
 
         // ── Modale des liens récupérés — vue centralisée pour tout copier/
@@ -819,6 +940,9 @@ HTML = """
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
                         ${item.source === "archive.org" ? `<button class="item-link" onclick="resolveDirectUrl(items[${i}], this)">▶ Lire ici</button>` : ""}
+                    </div>
+                    ${item.preview ? `<audio class="item-player" src="${item.preview}" controls preload="none"></audio>` : ""}
+                    <div class="item-links">
                         ${cartAction}
                     </div>
                 </div>
@@ -953,6 +1077,7 @@ HTML = """
             renderResults(getCart());
         });
 
+        document.getElementById("btnDownloadAll").addEventListener("click", downloadAll);
         document.getElementById("btnResolveAll").addEventListener("click", async () => {
             const btn = document.getElementById("btnResolveAll");
             btn.disabled = true;
@@ -999,8 +1124,10 @@ HTML = """
         });
 
         // Init : favoris + panier + recherche depuis l'URL si présente.
-        setFavorites(getFavorites());
-        setCart(getCart());
+        // On LIT les deux listes, on n'écrit que sur une action de l'usager :
+        // un setX(getX()) au chargement enverrait un miroir vide et effacerait
+        // ce qui a été posé depuis une autre machine.
+        loadStored();
         (function initFromUrl() {
             const p = Object.fromEntries(new URLSearchParams(location.search));
             if (p.q) {
@@ -1014,6 +1141,165 @@ HTML = """
 </body>
 </html>
 """
+
+
+DATA_DIR = Path(os.getenv("DATA_DIR", Path.home() / ".local/share/archive-search"))
+
+# ── Panier partagé ────────────────────────────────────────────────────────
+# Panier et favoris vivaient en localStorage : une liste par navigateur, perdue au
+# nettoyage du cache et invisible depuis une autre machine. Il vit maintenant
+# ici, dans un fichier, parce qu'une seule personne l'utilise depuis plusieurs
+# postes du même réseau.
+# ⚠️ Dernier écrivain gagne : deux onglets qui modifient en même temps, c'est le
+# second qui reste. Pas de verrou ni de fusion — à cette échelle, une
+# réconciliation coûterait plus cher que le problème qu'elle éviterait.
+# Panier ET favoris : même besoin, même mécanique, un fichier chacun.
+LISTS = {
+    "cart": Path(os.getenv("CART_FILE", DATA_DIR / "cart.json")),
+    "favorites": Path(os.getenv("FAVORITES_FILE", DATA_DIR / "favorites.json")),
+}
+_list_lock = threading.Lock()
+
+
+def _list_read(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def _list_write(path, items):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)             # remplacement atomique : jamais de liste tronquée
+
+
+@app.route("/api/list/<name>", methods=["GET", "PUT"])
+def api_list(name):
+    path = LISTS.get(name)
+    if path is None:
+        return jsonify({"error": f"Liste inconnue : {name}"}), 404
+    if request.method == "GET":
+        with _list_lock:
+            return jsonify({"items": _list_read(path)})
+    items = (request.get_json(silent=True) or {}).get("items")
+    if not isinstance(items, list):
+        return jsonify({"error": "items doit être une liste"}), 400
+    with _list_lock:
+        _list_write(path, items)
+    return jsonify({"items": items})
+
+
+# Ancienne route, gardée : une page encore ouverte dans un onglet continue de
+# l'appeler après le redémarrage du service.
+@app.route("/api/cart", methods=["GET", "PUT"])
+def api_cart():
+    return api_list("cart")
+
+
+# ── Téléchargement groupé du panier ───────────────────────────────────────
+# Un seul lot à la fois, dans un thread : un film d'archive.org se compte en
+# gigaoctets, et une requête HTTP qui attend la fin expirerait bien avant.
+# L'état vit en mémoire — relancer le service annule le suivi, pas les fichiers
+# déjà écrits.
+DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", Path.home() / "archive-search-downloads"))
+DOWNLOAD_CHUNK = 1 << 16
+
+_dl_lock = threading.Lock()
+_dl = {"running": False, "done": 0, "total": 0, "folder": "", "current": "", "errors": [], "written": []}
+
+
+def _safe_name(name, maxlen=90):
+    """Nom de fichier sûr : pas de séparateur, pas de point initial, borné."""
+    name = re.sub(r"[^\w\s.\-()\[\]]", "", name, flags=re.UNICODE).strip()
+    name = re.sub(r"\s+", " ", name).lstrip(".")
+    return (name[:maxlen].strip() or "sans-titre")
+
+
+def _resolve_download_url(item):
+    """(url, raison_du_refus). Seules les sources donnant un VRAI fichier passent."""
+    source = item.get("source", "")
+    if source == "archive.org":
+        try:
+            url, _ = resolve_archive_file(item.get("identifier", ""))
+            return (url, None) if url else (None, "aucun fichier média trouvé")
+        except Exception as e:
+            return None, f"résolution impossible ({e})"
+    if source == "freesound":
+        # L'API ne donne que la prévisualisation : le fichier d'origine exige
+        # OAuth2, pas le simple jeton. C'est un mp3 utilisable, pas le master.
+        return (item.get("preview") or None, None if item.get("preview") else "pas de prévisualisation")
+    # Gutenberg, Wikimedia, LibriVox : `url` pointe une PAGE, pas un fichier.
+    return None, "cette source ne renvoie qu'une page web, pas un fichier"
+
+
+def _download_worker(items, folder):
+    for item in items:
+        title = item.get("title", "sans-titre")
+        with _dl_lock:
+            _dl["current"] = title
+        url, refus = _resolve_download_url(item)
+        if not url:
+            with _dl_lock:
+                _dl["errors"].append(f"{title} — {refus}")
+                _dl["done"] += 1
+            continue
+        try:
+            sub = folder / _safe_name(item.get("source", "divers"), 40)
+            sub.mkdir(parents=True, exist_ok=True)
+            ext = os.path.splitext(urlparse(url).path)[1][:8] or ".bin"
+            # Beaucoup de titres Freesound finissent par « .wav » : sans ça on
+            # écrirait « pluie.wav.mp3 », qui ment sur le format réel.
+            base = _safe_name(re.sub(r"\.(wav|aiff?|flac|mp3|ogg|m4a)$", "", title, flags=re.I))
+            dest = sub / (base + ext)
+            n = 1
+            while dest.exists():           # deux sons peuvent porter le même titre
+                dest = sub / f"{base} ({n}){ext}"
+                n += 1
+            with requests.get(url, headers=HEADERS, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                if "text/html" in (r.headers.get("Content-Type") or ""):
+                    raise RuntimeError("le serveur renvoie une page web, pas un fichier")
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                with open(tmp, "wb") as fh:
+                    for chunk in r.iter_content(DOWNLOAD_CHUNK):
+                        fh.write(chunk)
+                tmp.rename(dest)           # rien d'incomplet ne porte le nom final
+            with _dl_lock:
+                _dl["written"].append(str(dest.relative_to(folder)))
+        except Exception as e:
+            with _dl_lock:
+                _dl["errors"].append(f"{title} — {e}")
+        finally:
+            with _dl_lock:
+                _dl["done"] += 1
+    with _dl_lock:
+        _dl["running"] = False
+        _dl["current"] = ""
+
+
+@app.route("/api/download", methods=["POST"])
+def api_download():
+    with _dl_lock:
+        if _dl["running"]:
+            return jsonify({"error": "Un téléchargement est déjà en cours."}), 409
+    items = (request.get_json(silent=True) or {}).get("items") or []
+    if not items:
+        return jsonify({"error": "Panier vide."}), 400
+    folder = DOWNLOAD_DIR / time.strftime("%Y-%m-%d_%H%M")
+    folder.mkdir(parents=True, exist_ok=True)
+    with _dl_lock:
+        _dl.update(running=True, done=0, total=len(items), folder=str(folder),
+                   current="", errors=[], written=[])
+    threading.Thread(target=_download_worker, args=(items, folder), daemon=True).start()
+    return jsonify({"started": True, "folder": str(folder), "total": len(items)})
+
+
+@app.route("/api/download/status")
+def api_download_status():
+    with _dl_lock:
+        return jsonify(dict(_dl))
 
 
 @app.route("/")

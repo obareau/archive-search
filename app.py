@@ -19,6 +19,11 @@ app = Flask(__name__)
 
 ROWS_PER_PAGE = 20
 REQUEST_TIMEOUT = 10
+# Gutendex répond en 20-30 s quand il est chargé (mesuré le 2026-10-10). À 10 s
+# on le déclarait mort alors qu'il travaillait : le timeout est la panne, pas
+# le service. Par source, parce qu'allonger le délai POUR TOUTES ferait
+# patienter une minute sur une vraie coupure d'archive.org.
+SOURCE_TIMEOUT = {"gutenberg": 30}
 # Wikimedia (et d'autres APIs) rejettent le user-agent par défaut de
 # `requests` (403 "Please set a user-agent...", politique anti-bot) —
 # identifiant explicite requis sur tous les appels sortants.
@@ -123,8 +128,17 @@ def search_archive_org(query, search_type, page, sort="", collection=""):
 
 def search_gutenberg(query, _search_type, page, _sort="", _collection=""):
     params = {"search": query, "page": page}
-    resp = requests.get("https://gutendex.com/books/", params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    data = resp.json()
+    resp = requests.get("https://gutendex.com/books/", params=params, headers=HEADERS,
+                        timeout=SOURCE_TIMEOUT.get("gutenberg", REQUEST_TIMEOUT))
+    # Sous charge, gutendex rend une page d'erreur HTML avec un code 5xx. Sans
+    # ce test, resp.json() lève « Expecting value: line 1 column 1 », qui
+    # ressemble à un bug chez nous.
+    if resp.status_code >= 500:
+        raise RuntimeError(f"Gutendex est en difficulté (HTTP {resp.status_code}) — réessaie plus tard.")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError("Gutendex a renvoyé une réponse illisible (pas du JSON) — service instable.")
     total = data.get("count")
 
     results = []
@@ -1642,6 +1656,11 @@ def api_search():
                    "related": related_terms(results, query)}
         cache_set(cache_key, payload)
         return jsonify(payload)
+    except requests.exceptions.Timeout:
+        # « HTTPSConnectionPool… Read timed out » n'apprend rien à l'usager.
+        secs = SOURCE_TIMEOUT.get(source, REQUEST_TIMEOUT)
+        return jsonify({"error": f"{source} n'a pas répondu en {secs} s — "
+                                 f"leur service est lent ou indisponible, réessaie plus tard."}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

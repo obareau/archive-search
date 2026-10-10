@@ -81,6 +81,15 @@ d'incomplet ne porte le nom final, et les doublons de titre sont suffixés.
 Wikimedia et LibriVox ne renvoient qu'une page web : ces items sont ignorés, et
 le bilan dit lesquels et pourquoi.
 
+### Gutendex est lent
+
+Mesuré le 2026-10-10 : 15 à 30 s par requête, et une page d'erreur HTML sous
+charge. Le timeout commun de 10 s le déclarait mort alors qu'il travaillait, et
+`resp.json()` levait alors « Expecting value: line 1 column 1 », qui ressemble à
+un bug local. D'où `SOURCE_TIMEOUT` — 30 s pour cette source seulement, car
+allonger le délai pour toutes ferait patienter une minute sur une vraie coupure
+d'archive.org — plus la détection d'une réponse non-JSON et un message lisible.
+
 ### Pourquoi la Library of Congress n'est qu'un renvoi
 
 `loc.gov` place l'ensemble de son site derrière un défi JavaScript (Cloudflare)

@@ -5,6 +5,7 @@ Commons, LibriVox)."""
 
 import json
 import os
+import subprocess
 import random
 import threading
 import re
@@ -96,7 +97,7 @@ def search_archive_org(query, search_type, page, sort="", collection=""):
 
     params = {
         "q": q,
-        "fl": "identifier,title,creator,year,mediatype,description,subject",
+        "fl": "identifier,title,creator,year,mediatype,description,subject,licenseurl",
         "output": "json",
         "rows": ROWS_PER_PAGE,
         "page": page,
@@ -122,6 +123,7 @@ def search_archive_org(query, search_type, page, sort="", collection=""):
             "source": "archive.org",
             "identifier": identifier,
             "keywords": [str(x) for x in (doc.get("subject") or ([] if doc.get("subject") is None else [doc["subject"]]))][:12],
+            "license": normalize_license(first(doc.get("licenseurl"), "")),
         })
     return results, total
 
@@ -278,6 +280,7 @@ def search_freesound(query, _search_type, page, _sort="", _collection=""):
             "source": "freesound",
             "identifier": str(snd.get("id", "")),
             "keywords": [str(t) for t in (snd.get("tags") or [])][:12],
+            "license": normalize_license(snd.get("license")),
             # Écoutable sans second appel : l'API donne déjà le mp3.
             "preview": previews.get("preview-hq-mp3") or previews.get("preview-lq-mp3") or "",
         })
@@ -525,6 +528,38 @@ button:disabled { opacity: .4; cursor: default; color: var(--muted); }
 .pagination { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 22px; }
 #pageInfo { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
+/* Licence : trois états, trois couleurs. « Inconnu » est gris et PAS vert —
+   l'absence d'information n'est pas une autorisation. */
+.lic { font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; padding: 1px 6px;
+       border-radius: 3px; border: 1px solid transparent; white-space: nowrap; text-decoration: none; }
+.lic.free { color: var(--ok); border-color: rgba(79,154,99,.35); background: rgba(79,154,99,.10); }
+.lic.restricted { color: var(--err); border-color: rgba(192,86,74,.35); background: rgba(192,86,74,.10); }
+.lic.unknown { color: var(--muted); border-color: var(--line); }
+a.lic:hover { border-color: currentColor; }
+.lic-filter { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.lic-filter input { width: auto; padding: 0; margin: 0; accent-color: var(--accent); }
+
+/* Nouveauté : un liseré sur le bord gauche plutôt qu'un fond coloré — la
+   carte reste lisible, et vingt cartes neuves ne font pas un mur de couleur. */
+.item.is-new { border-left: 2px solid var(--accent); }
+.badge-new {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--accent); background: var(--accent-soft);
+    padding: 1px 6px; border-radius: 3px; white-space: nowrap;
+}
+.hist-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 9px 11px; border-bottom: 1px solid var(--line-soft);
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-main { min-width: 0; }
+.hist-q { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+.watch-btn { background: none; border: 1px solid var(--line); padding: 4px 8px; font-size: 12px; }
+.watch-btn.on { color: var(--accent); border-color: var(--accent); }
+.hist-list { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
+             max-height: 55vh; overflow-y: auto; }
+
 /* Propositions connexes : une bande discrète, jamais un bloc qui pousse les
    résultats hors de l'écran. */
 .related { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 14px; }
@@ -654,6 +689,11 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             <button id="btnSurprise">🎲 Surprise-moi</button>
             <button id="btnFavorites">★ Favoris <span class="count" id="favCount">0</span></button>
             <button id="btnCart">🧺 Panier <span class="count" id="cartCount">0</span></button>
+            <button id="btnHistory">🕘 Historique</button>
+            <label class="lic-filter" title="Masque les licences restrictives ET celles qu'on ne connaît pas">
+                <input type="checkbox" id="onlyFree"> réutilisable seulement
+            </label>
+            <span class="count" id="licHidden"></span>
         </div>
         <div class="toolbar" id="cartBulkBar" style="display:none">
             <button id="btnDownloadAll" class="primary">⬇ Télécharger…</button>
@@ -700,6 +740,21 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
         </div>
     </dialog>
 
+    <dialog id="histModal" aria-labelledby="histTitle">
+        <div class="dlg-head">
+            <h2 id="histTitle">Historique des recherches</h2>
+            <button class="dlg-close" data-close="histModal" aria-label="Fermer">&#10005;</button>
+        </div>
+        <div class="dlg-body"><div class="hist-list" id="histList"></div></div>
+        <div class="dlg-foot">
+            <span class="dest" id="watchInfo">Les recherches suivies sont vérifiées toutes les 6 h.</span>
+            <span style="display:flex;gap:8px">
+                <button id="btnCheckNow">Vérifier maintenant</button>
+                <button id="btnClearHistory">Vider l'historique</button>
+            </span>
+        </div>
+    </dialog>
+
     <dialog id="linksModal" aria-labelledby="linksTitle">
         <div class="dlg-head">
             <h2 id="linksTitle">Liens récupérés</h2>
@@ -713,7 +768,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
     </dialog>
 
     <script>
-        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [] };
+        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [], newIds: new Set() };
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
@@ -1039,6 +1094,114 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             openLinksModal();
         }
 
+        // Trois états, et « inconnu » ne bascule JAMAIS du côté permissif :
+        // sur archive.org c'est le cas le plus fréquent, et le plus trompeur.
+        function licBadge(item) {
+            const l = item.license;
+            if (!l || !l.code) return '<span class="lic unknown" title="Aucune licence déclarée — vérifier à la source avant réutilisation">licence ?</span>';
+            const cls = l.free === true ? "free" : l.free === false ? "restricted" : "unknown";
+            const tip = l.free === true ? "Réutilisable, attribution selon la licence"
+                      : l.free === false ? "Restrictive : pas de modification et/ou pas d'usage commercial"
+                      : "Licence non reconnue — vérifier à la source";
+            return l.url
+                ? `<a class="lic ${cls}" href="${escapeAttr(l.url)}" target="_blank" title="${tip}">${escapeAttr(l.code)}</a>`
+                : `<span class="lic ${cls}" title="${tip}">${escapeAttr(l.code)}</span>`;
+        }
+
+        // Filtrage côté page : il porte sur les résultats DÉJÀ reçus, il ne
+        // rapatrie pas d'autres pages. Le compteur dit combien sont masqués,
+        // sinon une page presque vide passerait pour un manque de résultats.
+        function applyLicenseFilter() {
+            const only = document.getElementById("onlyFree").checked;
+            const hiddenEl = document.getElementById("licHidden");
+            if (!only) {
+                document.querySelectorAll(".item").forEach(el => { el.hidden = false; });
+                hiddenEl.textContent = "";
+                return;
+            }
+            let hidden = 0;
+            document.querySelectorAll(".item").forEach((el, i) => {
+                const free = items[i] && items[i].license && items[i].license.free === true;
+                el.hidden = !free;
+                if (!free) hidden++;
+            });
+            hiddenEl.textContent = hidden ? `${hidden} masqué(s)` : "";
+        }
+
+        function isNew(item) {
+            return state.newIds.has(String(item.identifier || item.url || item.title)) ? 1 : 0;
+        }
+
+        // ── Historique ────────────────────────────────────────────────────
+        async function openHistory() {
+            const list = document.getElementById("histList");
+            list.innerHTML = '<div class="dir-empty">Chargement…</div>';
+            document.getElementById("histModal").showModal();
+            try {
+                const d = await (await fetch("/api/history")).json();
+                if (!d.entries.length) {
+                    list.innerHTML = '<div class="dir-empty">Aucune recherche enregistrée.</div>';
+                    return;
+                }
+                list.innerHTML = d.entries.map(e => {
+                    const when = (e.last_run || "").replace("T", " à ").slice(0, 16);
+                    const bits = [e.source, `${e.runs} passage${e.runs > 1 ? "s" : ""}`, `${e.known} connus`];
+                    if (e.new_count) bits.push(`${e.new_count} neufs au dernier`);
+                    return `<div class="hist-row">
+                        <div class="hist-main">
+                            <div class="hist-q">${escapeAttr(e.query)}</div>
+                            <div class="hist-meta">${when} · ${bits.join(" · ")}</div>
+                        </div>
+                        <span style="display:flex;gap:6px;flex:none">
+                            <button class="watch-btn${e.watch ? " on" : ""}" data-watch="${escapeAttr(e.key)}"
+                                title="${e.watch ? "Surveillée : une notification part quand du neuf apparaît" : "Surveiller cette recherche"}">${e.watch ? "👁 suivie" : "👁"}</button>
+                            <button class="item-link" data-replay="${escapeAttr(JSON.stringify({
+                                q: e.query, source: e.source, type: e.type || "",
+                                sort: e.sort || "", collection: e.collection || "" }))}">Relancer</button>
+                            <button class="watch-btn" data-forget="${escapeAttr(e.key)}"
+                                title="Oublier cette recherche">&#10005;</button>
+                        </span>
+                    </div>`;
+                }).join("");
+                list.querySelectorAll("[data-replay]").forEach(b =>
+                    b.addEventListener("click", () => replay(JSON.parse(b.dataset.replay))));
+                list.querySelectorAll("[data-forget]").forEach(b =>
+                    b.addEventListener("click", async () => {
+                        // Confirmation seulement si la recherche est SUIVIE :
+                        // la supprimer arrête une veille, ce qui ne se devine
+                        // pas. Pour une ligne ordinaire, demander serait du
+                        // bruit — elle se recrée en relançant la recherche.
+                        const watched = b.closest(".hist-row").querySelector(".watch-btn.on");
+                        if (watched && !confirm("Cette recherche est surveillée. L'oublier arrête la veille. Continuer ?")) return;
+                        await fetch("/api/history/entry", {
+                            method: "DELETE", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ key: b.dataset.forget }),
+                        });
+                        openHistory();
+                    }));
+                list.querySelectorAll("[data-watch]").forEach(b =>
+                    b.addEventListener("click", async () => {
+                        const on = !b.classList.contains("on");
+                        await fetch("/api/history/watch", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ key: b.dataset.watch, watch: on }),
+                        });
+                        openHistory();
+                    }));
+            } catch (e) {
+                list.innerHTML = `<div class="dir-empty">Historique illisible : ${escapeAttr(e.message)}</div>`;
+            }
+        }
+
+        function replay(p) {
+            document.getElementById("histModal").close();
+            state.cartView = false;
+            state.favoritesView = false;
+            applyParams(p);
+            search(1);
+            window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+
         function itemCard(item, i) {
             const fav = isFavorite(item);
             const cart = isInCart(item);
@@ -1046,7 +1209,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                 ? `<button class="item-link" onclick="resolveCartLink(${i}, this)">Récupérer le lien</button>`
                 : "";
             return `
-                <div class="item">
+                <div class="item${isNew(item) ? " is-new" : ""}">
                     ${item.thumbnail ? `<img class="item-thumb" src="${item.thumbnail}" loading="lazy" onerror="this.style.display='none'">` : ""}
                     <div class="item-title-row">
                         <div class="item-title">${item.title}</div>
@@ -1055,7 +1218,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                             <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
                         </div>
                     </div>
-                    <div class="item-meta"><span class="src">${item.source}</span> · ${item.year || item.type} · ${item.creator || "N/A"}</div>
+                    <div class="item-meta">${isNew(item) ? '<span class="badge-new">nouveau</span>' : ""}<span class="src">${item.source}</span>${licBadge(item)} · ${item.year || item.type} · ${item.creator || "N/A"}</div>
                     <div class="item-desc">${item.description || ""}</div>
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
@@ -1106,6 +1269,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             }
             items = list;
             el.innerHTML = `<div class="results">${list.map((item, i) => itemCard(item, i)).join("")}</div>`;
+            applyLicenseFilter();
         }
 
         // ── État de recherche dans l'URL (partage, retour navigateur) ─────
@@ -1177,8 +1341,21 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                     return;
                 }
 
-                renderResults(data.results);
+                // Les nouveautés d'abord : on relance une recherche POUR
+                // elles, les faire chercher au milieu de vingt cartes
+                // annulerait l'intérêt.
+                state.newIds = new Set(data.new_ids || []);
+                const ordered = state.newIds.size
+                    ? [...data.results].sort((a, b) => isNew(b) - isNew(a))
+                    : data.results;
+                renderResults(ordered);
                 renderRelated(data.related);
+                if (state.newIds.size) {
+                    const bar = document.getElementById("dlStatus");
+                    bar.style.display = "flex";
+                    bar.innerHTML = `<div class="dl-wrap"><div class="dl-line"><span>` +
+                        `✦ ${state.newIds.size} nouveauté(s) depuis la dernière fois</span></div></div>`;
+                }
 
                 state.hasMore = data.has_more;
                 document.getElementById("pagination").style.display = "flex";
@@ -1230,6 +1407,25 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
 
         document.getElementById("btnDownloadAll").addEventListener("click", downloadAll);
         document.getElementById("btnDirGo").addEventListener("click", startDownload);
+        document.getElementById("onlyFree").addEventListener("change", applyLicenseFilter);
+        document.getElementById("btnHistory").addEventListener("click", openHistory);
+        document.getElementById("btnCheckNow").addEventListener("click", async (e) => {
+            const info = document.getElementById("watchInfo");
+            e.target.disabled = true;
+            try {
+                const d = await (await fetch("/api/history/check", { method: "POST" })).json();
+                // Le passage tourne en fond : on ne peut pas promettre un
+                // résultat tout de suite, on dit ce qui a démarré.
+                info.textContent = d.watched
+                    ? `Passage lancé sur ${d.watched} recherche(s) — notification s'il y a du neuf.`
+                    : "Aucune recherche suivie : active l'œil sur une ligne.";
+            } catch (err) { info.textContent = "Échec : " + err.message; }
+            setTimeout(() => { e.target.disabled = false; }, 3000);
+        });
+        document.getElementById("btnClearHistory").addEventListener("click", async () => {
+            await fetch("/api/history", { method: "DELETE" });
+            openHistory();
+        });
         document.getElementById("btnMkdir").addEventListener("click", makeDir);
         document.getElementById("newDirName").addEventListener("keydown", e => {
             if (e.key === "Enter") { e.preventDefault(); makeDir(); }
@@ -1564,6 +1760,231 @@ def index():
     return render_template_string(HTML)
 
 
+# ── Licences ──────────────────────────────────────────────────────────────
+# Un fonds en accès libre n'est PAS un fonds libre de droits. « by-nc-nd »
+# interdit la modification : un son sous cette licence ne peut pas entrer dans
+# un morceau publié. L'outil doit le dire AVANT le téléchargement, pas après.
+#
+# Trois états seulement, parce qu'un dégradé de nuances ne se lit pas sur une
+# carte : réutilisable, restreint, inconnu. « Inconnu » n'est pas « libre » —
+# c'est le cas le plus fréquent sur archive.org, et le plus trompeur.
+LICENSES = [
+    ("publicdomain/zero", "CC0", True),
+    ("publicdomain/mark", "Domaine public", True),
+    ("licenses/by-nc-nd", "CC BY-NC-ND", False),
+    ("licenses/by-nc-sa", "CC BY-NC-SA", False),
+    ("licenses/by-nc", "CC BY-NC", False),
+    ("licenses/by-nd", "CC BY-ND", False),
+    ("licenses/by-sa", "CC BY-SA", True),
+    ("licenses/by", "CC BY", True),
+    ("licenses/sampling+", "Sampling+", False),
+]
+
+
+def normalize_license(url):
+    """URL de licence → {code, libre}. `libre` vaut None quand on ne sait pas."""
+    u = (url or "").strip().lower()
+    if not u:
+        return {"code": "", "label": "", "free": None, "url": ""}
+    for needle, label, free in LICENSES:
+        if needle in u:
+            return {"code": label, "label": label, "free": free, "url": url}
+    return {"code": "autre", "label": "licence non reconnue", "free": None, "url": url}
+
+
+# ── Historique des recherches ─────────────────────────────────────────────
+# Sur le serveur, comme le panier : une recherche lancée depuis le portable se
+# relance depuis la machine du studio. Chaque entrée retient les identifiants
+# déjà vus, ce qui permet de dire ce qui est APPARU depuis la dernière fois —
+# c'est tout l'intérêt de relancer une recherche sur un fonds vivant.
+HISTORY_FILE = Path(os.getenv("HISTORY_FILE", DATA_DIR / "history.json"))
+HISTORY_MAX = 120
+SEEN_MAX = 400            # par recherche : au-delà, on oublie les plus anciens
+_hist_lock = threading.Lock()
+
+
+def _hist_key(source, query, search_type, sort, collection):
+    # La PAGE n'entre pas dans la clé : les pages 1 et 2 d'une même recherche
+    # sont la même recherche, et leurs résultats alimentent le même « déjà vu ».
+    return "|".join([source, query.strip().lower(), search_type or "", sort or "", collection or ""])
+
+
+def _hist_read():
+    try:
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _hist_write(data):
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HISTORY_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(HISTORY_FILE)
+
+
+def record_search(source, query, search_type, sort, collection, page, results):
+    """Enregistre le passage et retourne les identifiants JAMAIS vus avant.
+
+    ⚠️ Une recherche inédite ne renvoie RIEN comme nouveau : tout l'est, et
+    badger vingt résultats sur vingt n'apprendrait rien. La nouveauté n'a de
+    sens qu'au deuxième passage.
+    """
+    key = _hist_key(source, query, search_type, sort, collection)
+    ids = [str(r.get("identifier") or r.get("url") or r.get("title")) for r in results]
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _hist_lock:
+        data = _hist_read()
+        entry = data.get(key)
+        first_run = entry is None
+        if first_run:
+            entry = {"query": query, "source": source, "type": search_type,
+                     "sort": sort, "collection": collection,
+                     "first_seen": now, "runs": 0, "seen": {}, "new_count": 0}
+        fresh = [] if first_run else [i for i in ids if i not in entry["seen"]]
+        for i in ids:
+            entry["seen"].setdefault(i, now)
+        if len(entry["seen"]) > SEEN_MAX:
+            keep = sorted(entry["seen"].items(), key=lambda kv: kv[1], reverse=True)[:SEEN_MAX]
+            entry["seen"] = dict(keep)
+        # Le compteur ne vaut que pour la page 1 : sinon feuilleter trois pages
+        # gonflerait le chiffre sans qu'il soit rien arrivé.
+        if page == 1:
+            entry["new_count"] = len(fresh)
+        entry["last_run"] = now
+        entry["runs"] = entry.get("runs", 0) + (1 if page == 1 else 0)
+        data[key] = entry
+        if len(data) > HISTORY_MAX:
+            oldest = sorted(data.items(), key=lambda kv: kv[1].get("last_run", ""))[:len(data) - HISTORY_MAX]
+            for k, _ in oldest:
+                data.pop(k, None)
+        _hist_write(data)
+    return fresh
+
+
+@app.route("/api/history", methods=["GET", "DELETE"])
+def api_history():
+    if request.method == "DELETE":
+        with _hist_lock:
+            _hist_write({})
+        return jsonify({"entries": []})
+    with _hist_lock:
+        data = _hist_read()
+    entries = [{
+        "key": k, "query": e.get("query"), "source": e.get("source"),
+        "type": e.get("type"), "sort": e.get("sort"), "collection": e.get("collection"),
+        "first_seen": e.get("first_seen"), "last_run": e.get("last_run"),
+        "runs": e.get("runs", 0), "known": len(e.get("seen") or {}),
+        "new_count": e.get("new_count", 0), "watch": bool(e.get("watch")),
+    } for k, e in data.items()]
+    entries.sort(key=lambda e: e["last_run"] or "", reverse=True)
+    return jsonify({"entries": entries})
+
+
+# ── Veille sur les recherches ─────────────────────────────────────────────
+# Relancer à la main suppose d'y penser. Sur des fonds qui bougent lentement,
+# personne ne va vérifier tous les jours s'il y a une nouvelle prise de terrain
+# bretonne — donc c'est la machine qui regarde, et elle ne parle QUE s'il y a
+# du neuf. Un passage silencieux est le cas normal.
+WATCH_INTERVAL_S = int(os.getenv("WATCH_INTERVAL_S", 6 * 3600))
+WATCH_SPACING_S = int(os.getenv("WATCH_SPACING_S", 20))   # entre deux sources
+NOTIFY_CMD = os.getenv("NOTIFY_CMD", str(Path.home() / "scripts/notify.sh"))
+
+
+def notify(title, body):
+    """Passe par notify.sh — le point unique du homelab vers Discord.
+
+    Jamais d'URL de webhook ici : elle vit dans ~/.config/robotariis/, et ce
+    dépôt est public. Un échec se journalise, il n'interrompt pas la veille.
+    """
+    try:
+        subprocess.run([NOTIFY_CMD, title, body], timeout=20,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except Exception as e:
+        print(f"[veille] notification impossible : {e}", flush=True)
+
+
+def watched_entries():
+    with _hist_lock:
+        data = _hist_read()
+    return [(k, e) for k, e in data.items() if e.get("watch")]
+
+
+def _watch_pass():
+    entries = watched_entries()
+    if not entries:
+        return
+    print(f"[veille] {len(entries)} recherche(s) surveillée(s)", flush=True)
+    for key, e in entries:
+        source, query = e.get("source"), e.get("query")
+        fn = SOURCES.get(source)
+        if not fn:
+            continue
+        try:
+            results, _ = fn(query, e.get("type") or "", 1, e.get("sort") or "", e.get("collection") or "")
+        except Exception as err:
+            # Une source en panne ne doit pas arrêter la veille des autres,
+            # ni réveiller quelqu'un : c'est leur problème, pas un événement.
+            print(f"[veille] {source} « {query} » : {err}", flush=True)
+            time.sleep(WATCH_SPACING_S)
+            continue
+        fresh = record_search(source, query, e.get("type") or "", e.get("sort") or "",
+                              e.get("collection") or "", 1, results)
+        if fresh:
+            titles = [r.get("title", "?") for r in results
+                      if str(r.get("identifier") or r.get("url") or r.get("title")) in set(fresh)][:5]
+            notify(f"Archive Search — {len(fresh)} nouveauté(s)",
+                   f"« {query} » sur {source}\n" + "\n".join(f"· {t}" for t in titles))
+            print(f"[veille] {len(fresh)} neufs pour « {query} » ({source})", flush=True)
+        # Espacer : six recherches d'affilée sur la même source ressemblent à
+        # du moissonnage et finissent par se faire limiter.
+        time.sleep(WATCH_SPACING_S)
+
+
+def _watch_loop():
+    while True:
+        time.sleep(WATCH_INTERVAL_S)
+        try:
+            _watch_pass()
+        except Exception as e:
+            print(f"[veille] passage interrompu : {e}", flush=True)
+
+
+@app.route("/api/history/entry", methods=["DELETE"])
+def api_history_delete_entry():
+    """Oublier UNE recherche. Son « déjà vu » part avec elle : la relancer
+    ensuite repartira de zéro, et ne marquera donc rien comme nouveau."""
+    key = (request.get_json(silent=True) or {}).get("key")
+    with _hist_lock:
+        data = _hist_read()
+        if key not in data:
+            return jsonify({"error": "Recherche inconnue."}), 404
+        data.pop(key)
+        _hist_write(data)
+    return jsonify({"deleted": key})
+
+
+@app.route("/api/history/watch", methods=["POST"])
+def api_history_watch():
+    body = request.get_json(silent=True) or {}
+    key, on = body.get("key"), bool(body.get("watch"))
+    with _hist_lock:
+        data = _hist_read()
+        if key not in data:
+            return jsonify({"error": "Recherche inconnue."}), 404
+        data[key]["watch"] = on
+        _hist_write(data)
+    return jsonify({"key": key, "watch": on})
+
+
+@app.route("/api/history/check", methods=["POST"])
+def api_history_check():
+    """Déclenche un passage tout de suite, pour ne pas attendre six heures
+    quand on veut juste vérifier que la veille fonctionne."""
+    threading.Thread(target=_watch_pass, daemon=True).start()
+    return jsonify({"started": True, "watched": len(watched_entries())})
+
+
 # ── Propositions connexes ─────────────────────────────────────────────────
 # Dérivées des résultats DÉJÀ obtenus : aucun appel réseau de plus, et ça
 # marche pour toute source, même celles sans API de suggestion.
@@ -1647,7 +2068,11 @@ def api_search():
     cache_key = (source, query, search_type, sort, collection, page)
     cached = cache_get(cache_key)
     if cached is not None:
-        return jsonify(cached)
+        # L'historique s'enregistre MÊME sur un cache touché : relancer une
+        # recherche est un geste de l'usager, il doit être daté. La nouveauté,
+        # elle, se calcule contre ce qu'on savait avant ce passage.
+        fresh = record_search(source, query, search_type, sort, collection, page, cached["results"])
+        return jsonify({**cached, "new_ids": fresh})
 
     try:
         results, total = search_fn(query, search_type, page, sort, collection)
@@ -1655,7 +2080,8 @@ def api_search():
         payload = {"results": results, "total": total, "has_more": has_more,
                    "related": related_terms(results, query)}
         cache_set(cache_key, payload)
-        return jsonify(payload)
+        fresh = record_search(source, query, search_type, sort, collection, page, results)
+        return jsonify({**payload, "new_ids": fresh})
     except requests.exceptions.Timeout:
         # « HTTPSConnectionPool… Read timed out » n'apprend rien à l'usager.
         secs = SOURCE_TIMEOUT.get(source, REQUEST_TIMEOUT)
@@ -1710,4 +2136,9 @@ if __name__ == "__main__":
     os.makedirs("/home/olivier/DEV/archive-search", exist_ok=True)
     port = int(os.getenv("ARCHIVE_PORT", 5556))
     print(f"🎬 Archive Search @ http://127.0.0.1:{port}")
+    # Fil de veille : démon, donc il ne retient pas l'arrêt du service. Lancé
+    # ici et pas au niveau module — sous un rechargeur, le module est importé
+    # deux fois et on obtiendrait deux veilles en parallèle.
+    threading.Thread(target=_watch_loop, daemon=True).start()
+    print(f"   veille : {len(watched_entries())} recherche(s), toutes les {WATCH_INTERVAL_S // 3600} h")
     app.run(host="0.0.0.0", port=port, debug=False)

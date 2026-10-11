@@ -102,6 +102,45 @@ vivent chez eux.
 Le fonds `library_of_congress` présent sur archive.org ne comble pas le manque :
 c'est du texte numérisé, pas leur audio.
 
+## Historique, nouveautés et veille
+
+Chaque recherche est datée et enregistrée côté serveur (`history.json`, à côté
+du panier), avec les identifiants déjà vus. La relancer depuis **🕘 Historique**
+met donc en avant ce qui est **apparu depuis la dernière fois** : liseré ambre,
+badge « nouveau », et les nouveautés remontées en tête de liste.
+
+⚠️ Une recherche **inédite** ne signale rien comme nouveau — tout l'est, et
+badger vingt résultats sur vingt n'apprend rien. La nouveauté commence au
+deuxième passage. Le compteur ne bouge qu'en page 1, sinon feuilleter trois
+pages le gonflerait sans qu'il soit rien arrivé. La clé d'une entrée ignore la
+page : les pages 1 et 2 d'une même recherche sont la même recherche.
+
+L'œil (👁) sur une ligne la met sous **veille** : un passage toutes les 6 h
+(`WATCH_INTERVAL_S`), et une notification via `~/scripts/notify.sh` **seulement
+s'il y a du neuf** — un passage silencieux est le cas normal. Les sources sont
+espacées de 20 s (`WATCH_SPACING_S`) : six requêtes d'affilée ressemblent à du
+moissonnage et finissent limitées. Une source en panne est journalisée, elle
+n'arrête pas la veille des autres et ne réveille personne.
+
+La croix oublie **une** recherche ; son « déjà vu » part avec elle, donc la
+relancer repart de zéro. La confirmation n'apparaît que si la ligne est
+surveillée — c'est le seul cas où supprimer arrête quelque chose.
+
+## Licences
+
+Chaque résultat porte sa licence : **vert** réutilisable, **rouge** restrictif
+(`by-nc-nd` interdit la modification — un son sous cette licence ne peut pas
+entrer dans un morceau publié), **gris** inconnu. La case « réutilisable
+seulement » masque rouge **et** gris, et dit combien de cartes sont cachées.
+
+⚠️ **« Inconnu » n'est pas « libre ».** C'est le cas le plus fréquent sur
+archive.org : sur une recherche `prelinger`, 1 réutilisable, 3 restreints et
+**16 inconnus** sur 20. Un fonds en accès libre n'est pas un fonds libre de
+droits, et le filtre ne fait pas de ce gris un feu vert.
+
+Le filtre porte sur les résultats **déjà reçus** — il ne rapatrie pas d'autres
+pages pour remplir l'écran.
+
 ## Lancer
 
 ```bash
@@ -110,7 +149,5 @@ uv run app.py          # port 5556 par défaut, ou $ARCHIVE_PORT
 
 ## Notes
 
-- Favoris et panier vivent dans le `localStorage` du navigateur : pas de base,
-  pas de compte.
 - La résolution des fichiers directs ne vaut que pour archive.org ; les autres
   sources renvoient déjà une URL de lecture.

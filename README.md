@@ -183,11 +183,83 @@ fois dans le même dossier, et le second lot ne doit pas effacer l'attribution
 du premier. Un fichier déjà crédité là n'est pas recrédité, donc reprendre un
 lot n'empile pas le même paragraphe.
 
+## Fouille (mode agent)
+
+Une recherche ordinaire pose **une** question. Fouiller, c'est en poser vingt
+et recouper — ce qu'on faisait à la main en cliquant les propositions connexes
+une par une. Le bouton **🔎 Fouiller** le fait d'un coup, à partir d'un thème
+en clair : « brume et cornes de brume sur une côte de nuit ».
+
+**Deux passes, et la seconde est celle qui compte.** Un modèle local déplie le
+thème en champ lexical — surtout en anglais, parce qu'un terme français ne
+ramène presque rien de ces fonds. Puis la récolte est relue par
+`related_terms()`, qui en tire le vocabulaire **du fonds lui-même** : c'est là
+qu'apparaissent les mots qu'aucun modèle n'avait, comme `perranporth` (une
+plage de Cornouailles) sur une fouille de brume côtière.
+
+Le champ est **éditable avant de lancer** : le modèle en propose toujours deux
+ou trois à jeter.
+
+### Le modèle, mesuré
+
+Sur « brume et cornes de brume sur une côte de nuit », le 2026-10-11 :
+
+| Modèle | À chaud | Ce qu'il sort |
+|---|---|---|
+| `llama3.1:8b` **(défaut)** | 5,7 s | `foghorn`, `fog bank`, `fogbound`, `headland` |
+| `kimi-k2.6:cloud` | 113 s | `diaphone`, `tyfon`, `fog bell` — les vraies technologies |
+| `qwen2.5:7b` | 4,5 s | `caveat`, `weatherphenomena` : mots collés, et pas de `foghorn` |
+
+Le local par défaut, le cloud en option assumée. Le premier appel de la session
+paie le chargement du modèle (une minute) ; `keep_alive` le garde ensuite.
+
+### Classement : proximité au thème
+
+⚠️ **La centralité ne suffit pas, c'est mesuré.** « Un document trouvé par six
+termes est plus au cœur du thème » paraissait évident — sauf que sur 400
+documents récoltés, **un seul** avait été trouvé par deux termes : les sources
+rendent vingt résultats par terme et les listes ne se recoupent pas. Le score
+retombait donc sur la licence, et une fouille sur la brume marine sortait
+`Spray Bottle` et `Spritzing.wav` en tête, parce que `mist` avait ramené
+quarante vaporisateurs.
+
+D'où un classement par plongement (`nomic-embed-text`, local). Deux détails qui
+renversent le résultat, tous deux mesurés :
+
+- **les préfixes de tâche de nomic sont obligatoires** (`search_query:` /
+  `search_document:`) — sans eux, 46 s et un classement inutilisable ;
+- **la requête n'est pas le thème français mais le champ lexical anglais.**
+  Avec le thème FR : `Albi Centre du Parc` en tête, écart haut/bas 0.173. Avec
+  le champ EN : `North Sea foghorn` en tête, écart 0.252.
+
+⚠️ La pesée (proximité ×14, centralité ×1) est **mesurée, pas choisie** : à 10
+et 2, un document trouvé par deux termes passait devant un foghorn 0,2 plus
+proche du thème. `test_hunt.py` pinne cet ordre.
+
+La licence réutilisable et le fichier téléchargeable ajoutent quelques points,
+et **ce qui est déjà pris est rétrogradé** — on fouille pour du neuf.
+
+### Ce que la fouille se refuse
+
+- **Gutenberg est hors du lot** : 15 à 30 s la requête, il mangerait sept
+  minutes à lui seul. Il reste accessible à la main.
+- **Une fouille à la fois**, et 1,2 s entre deux requêtes : quinze termes
+  d'affilée sur une source ressemblent à du moissonnage.
+- **Rien n'est écrit dans l'historique.** Une fouille de quinze termes y
+  créerait quinze entrées et enterrerait un mois de recherches.
+- **Rien ne part au panier tout seul.** Deux cents résultats déversés dedans
+  détruiraient une sélection faite à la main.
+- Une source qui tombe **sort de la rotation** et le rapport le dit une fois,
+  au lieu de coûter quinze échecs.
+- Le rapport **« Voir le rendement »** dit quels termes ont donné et lesquels
+  n'ont rien rendu — sans ça, le champ du modèle reste invérifiable.
+
 ## Lancer
 
 ```bash
 uv run app.py              # port 5556 par défaut, ou $ARCHIVE_PORT
 uv run test_downloads.py   # journal + fiche de crédits
+uv run test_hunt.py        # hygiène des termes + pesée du classement
 ```
 
 ## Notes

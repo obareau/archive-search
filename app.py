@@ -10,6 +10,7 @@ import shutil
 import random
 import threading
 import re
+import math
 import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -548,6 +549,27 @@ a.lic:hover { border-color: currentColor; }
     text-transform: uppercase; color: var(--accent); background: var(--accent-soft);
     padding: 1px 6px; border-radius: 3px; white-space: nowrap;
 }
+/* Fouille : les termes du champ sont des puces éditables — cliquer sur la
+   croix retire un terme, et c'est le geste le plus fréquent (le modèle en
+   propose toujours deux ou trois à jeter). */
+.field-box { display: flex; flex-wrap: wrap; gap: 6px; padding: 9px; min-height: 44px;
+             border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.term { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono);
+        font-size: 11.5px; padding: 3px 7px; border-radius: 3px; border: 1px solid var(--line);
+        background: var(--bg-soft); }
+.term.fonds { border-color: var(--accent); color: var(--accent); }
+.term b { cursor: pointer; color: var(--muted); font-weight: 400; }
+.term b:hover { color: var(--err); }
+.hunt-note { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin: 6px 0 0; }
+.hunt-src { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+.hunt-src label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+.hunt-src input { width: auto; margin: 0; padding: 0; accent-color: var(--accent); }
+.rep-row { display: flex; justify-content: space-between; gap: 10px; font-family: var(--mono);
+           font-size: 11px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.rep-row.zero { color: var(--muted); }
+.rep-row b { font-weight: 400; color: var(--accent); }
+.hits { font-family: var(--mono); font-size: 9.5px; color: var(--accent);
+        background: var(--accent-soft); padding: 1px 5px; border-radius: 3px; white-space: nowrap; }
 .badge-taken {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
     text-transform: uppercase; color: var(--muted); border: 1px solid var(--line);
@@ -695,6 +717,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             <button id="btnSurprise">🎲 Surprise-moi</button>
             <button id="btnFavorites">★ Favoris <span class="count" id="favCount">0</span></button>
             <button id="btnCart">🧺 Panier <span class="count" id="cartCount">0</span></button>
+            <button id="btnHunt">🔎 Fouiller</button>
             <button id="btnHistory">🕘 Historique</button>
             <label class="lic-filter" title="Masque les licences restrictives ET celles qu'on ne connaît pas">
                 <input type="checkbox" id="onlyFree"> réutilisable seulement
@@ -744,6 +767,37 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                 <button id="btnDirGo" class="primary">Télécharger ici</button>
             </span>
         </div>
+    </dialog>
+
+    <dialog id="huntModal" aria-labelledby="huntTitle">
+        <div class="dlg-head">
+            <h2 id="huntTitle">Fouiller un champ lexical</h2>
+            <button class="dlg-close" data-close="huntModal" aria-label="Fermer">&#10005;</button>
+        </div>
+        <div class="dlg-body">
+            <input id="huntTheme" placeholder="un thème en clair — « brume et cornes de brume sur une côte de nuit »">
+            <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+                <select id="huntModel" style="flex:none;width:auto"></select>
+                <button id="btnField">Proposer un champ</button>
+            </div>
+            <p class="hunt-note" id="huntNote">Le champ est proposé puis <b>corrigeable</b> : un terme de trop se retire d'un clic, et on peut en ajouter.</p>
+            <div class="field-box" id="fieldBox"></div>
+            <input id="huntAdd" placeholder="ajouter un terme puis Entrée" style="margin-top:8px">
+            <div class="hunt-src" id="huntSrc"></div>
+        </div>
+        <div class="dlg-foot">
+            <span class="dest" id="huntCost"></span>
+            <button id="btnHuntGo" class="primary">Lancer la fouille</button>
+        </div>
+    </dialog>
+
+    <dialog id="repModal" aria-labelledby="repTitle">
+        <div class="dlg-head">
+            <h2 id="repTitle">Rendement des termes</h2>
+            <button class="dlg-close" data-close="repModal" aria-label="Fermer">&#10005;</button>
+        </div>
+        <div class="dlg-body"><div id="repList"></div></div>
+        <div class="dlg-foot"><span class="dest" id="repNote"></span></div>
     </dialog>
 
     <dialog id="histModal" aria-labelledby="histTitle">
@@ -1228,6 +1282,138 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             window.scrollTo({ top: 0, behavior: "smooth" });
         }
 
+        // ── Fouille ───────────────────────────────────────────────────────
+        // Le champ vit dans un tableau, pas dans le DOM : il se corrige à la
+        // main, se complète, et part tel quel au serveur.
+        let field = [];
+        let huntSources = [];
+
+        function renderField() {
+            const box = document.getElementById("fieldBox");
+            box.innerHTML = field.length
+                ? field.map((x, i) => `<span class="term${x.origin === "fonds" ? " fonds" : ""}">${escapeAttr(x.term)}<b data-drop="${i}" title="Retirer">&#10005;</b></span>`).join("")
+                : '<span class="hunt-note">Aucun terme — propose un champ, ou tape les tiens.</span>';
+            box.querySelectorAll("[data-drop]").forEach(b =>
+                b.addEventListener("click", () => { field.splice(+b.dataset.drop, 1); renderField(); }));
+            const n = field.length * (huntSources.filter(s => s.on).length || 1);
+            document.getElementById("huntCost").textContent = field.length
+                ? `${field.length} termes × ${huntSources.filter(s => s.on).length} sources ≈ ${n} requêtes, ${Math.ceil(n * 1.6 / 60)} min`
+                : "";
+        }
+
+        function addTerm(term) {
+            const s = term.trim().toLowerCase();
+            if (s && !field.some(x => x.term === s)) field.push({ term: s, origin: "main" });
+            renderField();
+        }
+
+        async function openHunt() {
+            const m = document.getElementById("huntModel");
+            if (!m.options.length) {
+                // Les sources et les modèles viennent du serveur : la page ne
+                // doit pas redéclarer une liste qui existe déjà là-bas.
+                try {
+                    const d = await (await fetch("/api/hunt/field")).json();
+                    (d.models || []).forEach((x, i) => m.add(new Option(i ? x : x + "  (local, rapide)", x)));
+                    huntSources = (d.sources || []).map(s => ({ name: s, on: true }));
+                } catch (e) { /* le serveur dira non au lancement */ }
+                document.getElementById("huntSrc").innerHTML = huntSources.map((s, i) =>
+                    `<label><input type="checkbox" data-src="${i}" checked> ${escapeAttr(s.name)}</label>`).join("")
+                    + '<span class="hunt-note">Gutenberg est hors du lot : 30 s la requête.</span>';
+                document.getElementById("huntSrc").querySelectorAll("[data-src]").forEach(c =>
+                    c.addEventListener("change", () => { huntSources[+c.dataset.src].on = c.checked; renderField(); }));
+            }
+            renderField();
+            document.getElementById("huntModal").showModal();
+        }
+
+        async function proposeField() {
+            const theme = document.getElementById("huntTheme").value.trim();
+            if (!theme) return;
+            const btn = document.getElementById("btnField");
+            const note = document.getElementById("huntNote");
+            btn.disabled = true;
+            note.textContent = "Le modèle réfléchit… le premier appel peut prendre une minute (chargement).";
+            try {
+                const d = await (await fetch("/api/hunt/field", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ theme, model: document.getElementById("huntModel").value }),
+                })).json();
+                if (d.error) { note.textContent = d.error; return; }
+                field = (d.terms || []).map(x => ({ term: x, origin: "champ" }));
+                note.textContent = d.note || "";
+                renderField();
+            } catch (e) { note.textContent = "Échec : " + e.message; }
+            finally { btn.disabled = false; }
+        }
+
+        async function startHunt() {
+            const sources = huntSources.filter(s => s.on).map(s => s.name);
+            if (!field.length || !sources.length) return;
+            document.getElementById("huntModal").close();
+            const bar = document.getElementById("dlStatus");
+            bar.style.display = "flex";
+            bar.innerHTML = '<div class="dl-wrap"><div class="dl-line"><span>Fouille…</span></div></div>';
+            try {
+                const d = await (await fetch("/api/hunt", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ theme: document.getElementById("huntTheme").value,
+                                           terms: field.map(x => x.term), sources }),
+                })).json();
+                if (d.error) { renderDl({ error: d.error }); return; }
+                document.getElementById("results").innerHTML = '<div class="loading">⏳ Fouille en cours…</div>';
+                pollHunt();
+            } catch (e) { renderDl({ error: e.message }); }
+        }
+
+        function renderHuntBar(d) {
+            const bar = document.getElementById("dlStatus");
+            const pct = d.steps ? Math.round((d.step / d.steps) * 100) : 0;
+            const head = d.running ? `🔎 ${d.step}/${d.steps} termes` : `✓ ${d.kept} documents`;
+            const sub = d.running ? d.current : `${d.report.length} termes passés`;
+            let html = `<div class="dl-wrap">
+                <div class="dl-line"><span>${head}</span><span class="dl-file">${escapeAttr(sub)}</span></div>
+                <div class="dl-bar"><div class="dl-fill ${d.running ? "" : "done"}" style="width:${d.running ? pct : 100}%"></div></div>`;
+            if (!d.running) {
+                const zero = d.report.filter(r => !r.found).length;
+                html += `<div class="dl-sub">`
+                    + (d.ranking ? `classé par ${escapeAttr(d.ranking)}. ` : "")
+                    + (d.pass2.length ? `second tour sur le vocabulaire du fonds : ${d.pass2.map(escapeAttr).join(", ")}. ` : "")
+                    + (zero ? `${zero} terme(s) sans résultat. ` : "")
+                    + `<button class="item-link" id="btnReport">Voir le rendement</button></div>`;
+            }
+            if (d.errors.length) html += `<div class="dl-sub">${d.errors.map(escapeAttr).join(" | ")}</div>`;
+            bar.innerHTML = html + "</div>";
+            const rb = document.getElementById("btnReport");
+            if (rb) rb.addEventListener("click", () => showReport(d));
+        }
+
+        function showReport(d) {
+            document.getElementById("repList").innerHTML = d.report
+                .slice().sort((a, b) => b.new - a.new)
+                .map(r => `<div class="rep-row${r.found ? "" : " zero"}">
+                    <span>${escapeAttr(r.term)}${r.origin === "fonds" ? " <b>· du fonds</b>" : ""}</span>
+                    <span>${r.found ? `${r.found} vus · ${r.new} inédits` : "rien"}</span></div>`).join("");
+            document.getElementById("repNote").textContent =
+                `« rien » n'est pas un échec : un terme sans résultat coûte une requête et ferme une piste.`;
+            document.getElementById("repModal").showModal();
+        }
+
+        async function pollHunt() {
+            try {
+                const d = await (await fetch("/api/hunt/status")).json();
+                renderHuntBar(d);
+                if (d.running) { setTimeout(pollHunt, 1200); return; }
+                state.cartView = false;
+                state.favoritesView = false;
+                syncViewToggles();
+                document.getElementById("pagination").style.display = "none";
+                state.newIds = new Set();
+                renderResults(d.results);
+                renderRelated(null);
+            } catch (e) { renderDl({ error: "fouille non suivie : " + e.message }); }
+        }
+
         function itemCard(item, i) {
             const fav = isFavorite(item);
             const cart = isInCart(item);
@@ -1244,7 +1430,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                             <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
                         </div>
                     </div>
-                    <div class="item-meta">${isNew(item) ? '<span class="badge-new">nouveau</span>' : ""}${isTaken(item) ? '<span class="badge-taken" title="Déjà sur le disque — le relancer le copiera depuis le fichier local, sans réseau">déjà pris</span>' : ""}<span class="src">${item.source}</span>${licBadge(item)} · ${item.year || item.type} · ${item.creator || "N/A"}</div>
+                    <div class="item-meta">${isNew(item) ? '<span class="badge-new">nouveau</span>' : ""}${isTaken(item) ? '<span class="badge-taken" title="Déjà sur le disque — le relancer le copiera depuis le fichier local, sans réseau">déjà pris</span>' : ""}${item.rel ? `<span class="hits" title="Proximité au champ lexical${(item.hits || []).length ? " — trouvé par : " + escapeAttr(item.hits.join(", ")) : ""}">${Math.round(item.rel * 100)}%</span>` : ((item.hits || []).length > 1 ? `<span class="hits" title="Trouvé par : ${escapeAttr(item.hits.join(", "))}">${item.hits.length} termes</span>` : "")}<span class="src">${item.source}</span>${licBadge(item)} · ${item.year || item.type} · ${item.creator || "N/A"}</div>
                     <div class="item-desc">${item.description || ""}</div>
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
@@ -1435,6 +1621,15 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
         document.getElementById("btnDirGo").addEventListener("click", startDownload);
         document.getElementById("onlyFree").addEventListener("change", applyLicenseFilter);
         document.getElementById("btnHistory").addEventListener("click", openHistory);
+        document.getElementById("btnHunt").addEventListener("click", openHunt);
+        document.getElementById("btnField").addEventListener("click", proposeField);
+        document.getElementById("btnHuntGo").addEventListener("click", startHunt);
+        document.getElementById("huntTheme").addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); proposeField(); }
+        });
+        document.getElementById("huntAdd").addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); addTerm(e.target.value); e.target.value = ""; }
+        });
         document.getElementById("btnCheckNow").addEventListener("click", async (e) => {
             const info = document.getElementById("watchInfo");
             e.target.disabled = true;
@@ -2255,6 +2450,321 @@ def related_terms(results, query):
         "creators": top(creators, 5),
         "years": sorted(top(years, 5), reverse=True),
     }
+
+
+# ── Fouille : un thème, un champ lexical, plusieurs passes ────────────────
+# Une recherche ordinaire pose UNE question. Chercher de la matière, c'est en
+# poser vingt et recouper — ce qu'on faisait à la main en cliquant les
+# propositions connexes une par une. La fouille le fait d'un coup.
+#
+# Deux passes, et la seconde est celle qui compte : le modèle ouvre la porte
+# (il sait traduire « brume » en « fog », « mist », « lighthouse », et c'est
+# déjà l'essentiel sur des fonds anglophones), mais c'est le FONDS qui fournit
+# le vocabulaire juste. « foghorn » n'est pas dans le champ du modèle ; il est
+# dans les mots-clés des documents que « fog » ramène.
+# Mesuré le 2026-10-11 sur « brume et cornes de brume sur une côte de nuit » :
+#   qwen2.5:7b      4,5 s à chaud — faible : « caveat », « weatherphenomena »,
+#                   des mots collés qui ne ramènent rien, et PAS « foghorn »
+#   llama3.1:8b     5,7 s à chaud — « foghorn », « fog bank », « fogbound »
+#   kimi-k2.6:cloud 113 s — « diaphone », « tyfon », « fog bell » : les vraies
+#                   technologies de corne de brume, que personne ne taperait
+# D'où le local par défaut et le cloud en option assumée : deux minutes
+# d'attente pour un champ nettement plus fin, c'est à l'usager de choisir.
+HUNT_MODEL = os.getenv("HUNT_MODEL", "llama3.1:8b")
+HUNT_MODELS = ["llama3.1:8b", "kimi-k2.6:cloud", "qwen2.5:7b"]
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+HUNT_TERMS_MAX = 18
+HUNT_SPACING_S = float(os.getenv("HUNT_SPACING_S", 1.2))
+HUNT_PASS2_TERMS = 5
+# ponytail: 250 est un plafond de COÛT, pas de pertinence — le classement
+# plonge chaque document (~90 ms), donc 400 faisaient 40 s d'attente en fin de
+# fouille. La page n'en affiche que 120 : garder 250 laisse au classement de
+# quoi remonter un bon document de la traîne, sans payer la queue entière.
+HUNT_KEEP = 250               # récolte gardée en mémoire
+HUNT_RETURN = 120             # récolte renvoyée à la page
+# Gutendex met 15 à 30 s par requête (cf. plus haut) : dans une fouille de
+# quinze termes il mangerait sept minutes à lui seul. Il reste accessible à la
+# main, il n'entre pas dans le lot par défaut.
+HUNT_SOURCES = ["archive.org", "freesound", "wikimedia", "librivox"]
+
+FIELD_PROMPT = """Tu construis un champ lexical pour fouiller des archives sonores et audiovisuelles en accès libre (archive.org, Freesound, Wikimedia Commons).
+
+Thème : {theme}
+
+Donne les termes de recherche les plus susceptibles de RAMENER DES DOCUMENTS, pas les plus jolis. Règles :
+- majoritairement en ANGLAIS : ces fonds sont anglophones, un terme français ne ramène presque rien
+- des mots concrets qu'un catalogueur aurait écrits : objets, lieux, métiers, machines, phénomènes
+- 2 ou 3 termes très précis et inattendus
+- 1 à 3 mots par terme, en minuscules, pas de ponctuation, pas de mots collés
+- {n} termes maximum
+
+Réponds en JSON : {{"terms": ["...", "..."]}}"""
+
+# ── Classement par proximité au thème ────────────────────────────────────
+# La centralité (« trouvé par six termes du champ ») paraissait suffire. Elle
+# ne suffit pas : mesuré le 2026-10-11 sur 400 documents, UN SEUL avait été
+# trouvé par deux termes — les sources rendent vingt résultats par terme et
+# les listes ne se recoupent presque pas. Le score retombait donc sur la
+# licence, et une fouille sur la brume marine sortait « Spray Bottle » en tête,
+# parce que « mist » avait ramené quarante vaporisateurs.
+#
+# D'où une vraie mesure de proximité, par plongement local. Deux détails
+# mesurés, et les deux renversent le résultat :
+#   · les préfixes de tâche de nomic (`search_query:` / `search_document:`)
+#     sont obligatoires — sans eux, 46 s et un classement inutilisable
+#   · la requête n'est PAS le thème français mais LE CHAMP LEXICAL ANGLAIS.
+#     Avec le thème FR : « Albi Centre du Parc » en tête, écart 0.173.
+#     Avec le champ EN : « North Sea foghorn » en tête, écart 0.252.
+#     Le fonds est anglophone ; l'interroger en français classe du bruit.
+EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
+EMBED_BATCH = 64
+
+_hunt_lock = threading.Lock()
+_hunt = {"running": False, "step": 0, "steps": 0, "current": "", "theme": "",
+         "terms": [], "report": [], "results": [], "errors": [], "pass2": [],
+         "ranking": ""}
+
+
+def _clean_terms(raw):
+    """Minuscules, dédoublonné, borné. Les mots collés que sort parfois un
+    petit modèle (« weatherphenomena ») passent quand même : ils coûtent une
+    requête et le rapport dira qu'ils n'ont rien donné. Les refuser sur un
+    critère de forme écarterait aussi « foghorn » ou « super8 »."""
+    out = []
+    for x in raw:
+        s = re.sub(r"\s+", " ", str(x or "")).strip().strip('"\'').lower()
+        if 2 <= len(s) <= 40 and s not in out:
+            out.append(s)
+    return out[:HUNT_TERMS_MAX]
+
+
+def expand_field(theme, n=14, model=None):
+    """(termes, note). La note dit toujours d'où vient le champ — un champ
+    silencieusement réduit au thème serait une fouille qui n'en est pas une."""
+    model = model if model in HUNT_MODELS else HUNT_MODEL
+    body = json.dumps({
+        "model": model,
+        "prompt": FIELD_PROMPT.format(theme=theme, n=n),
+        "format": "json", "stream": False,
+        # Le modèle reste chargé : le premier appel paie le chargement (une
+        # minute sur un 7B), les suivants répondent en quelques secondes.
+        "keep_alive": "30m",
+        "options": {"temperature": 0.7},
+    }).encode()
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", data=body,
+                             headers={"Content-Type": "application/json"},
+                             timeout=180)
+        resp.raise_for_status()
+        terms = _clean_terms(json.loads(resp.json()["response"]).get("terms") or [])
+        if not terms:
+            return [theme], f"{model} n'a rendu aucun terme — champ réduit au thème."
+        return terms, f"champ proposé par {model} ({len(terms)} termes) — à corriger librement"
+    except Exception as e:
+        # Pas de modèle, pas de fouille muette : on le DIT et on laisse le
+        # thème seul, que l'usager complétera à la main.
+        return [theme], f"modèle injoignable ({e}) — champ réduit au thème, à compléter à la main"
+
+
+def _embed(texts):
+    """Vecteurs, ou None si le modèle ne répond pas. Par lots : quatre cents
+    textes d'un coup, c'est une requête qui finit par expirer."""
+    out = []
+    for i in range(0, len(texts), EMBED_BATCH):
+        resp = requests.post(f"{OLLAMA_URL}/api/embed", timeout=240,
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps({"model": EMBED_MODEL,
+                                              "input": texts[i:i + EMBED_BATCH],
+                                              "keep_alive": "30m"}).encode())
+        resp.raise_for_status()
+        out.extend(resp.json()["embeddings"])
+    return out
+
+
+def _cos(a, b):
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
+
+
+def _doc_text(item):
+    return f"{item.get('title', '')} — {(item.get('description') or '')[:200]}".strip(" —")
+
+
+def _hunt_one(source, term):
+    """Une recherche, en passant par le cache commun : deux termes voisins
+    ramènent souvent la même page, et une fouille relancée coûte alors zéro."""
+    key = (source, term, "", "", "", 1)
+    cached = cache_get(key)
+    if cached is not None:
+        return cached["results"], True
+    results, _total = SOURCES[source](term, "", 1, "", "")
+    cache_set(key, {"results": results, "total": _total, "has_more": False, "related": None})
+    return results, False
+
+
+def _hunt_score(entry, rel=None):
+    """Proximité au thème d'abord, le reste pour départager.
+
+    La centralité reste un signal — un document que plusieurs termes du champ
+    ramènent est rarement un hasard — mais elle ne vaut plus que le départage,
+    puisqu'elle ne se déclenche presque jamais à cette largeur.
+    """
+    item, hits = entry["item"], len(entry["terms"])
+    lic = item.get("license") or {}
+    # Pesée mesurée, pas choisie : à 10 et 2, un document trouvé par deux
+    # termes passait devant un foghorn 0.2 plus proche du thème — soit
+    # l'inverse de ce qu'on veut. La proximité observée s'étale sur ~0.3, la
+    # centralité sur 2 points : à 14 et 1, un écart de proximité de 0.07
+    # suffit à battre un terme de plus, et la centralité ne départage plus
+    # que des documents aussi proches l'un que l'autre.
+    score = 14 * (rel if rel is not None else 0.0) + hits
+    if lic.get("free") is True:
+        score += 2
+    elif lic.get("free") is False:
+        score -= 1
+    if item.get("source") in ("archive.org", "freesound"):
+        score += 1          # seules sources qui donnent un vrai fichier
+    if item.get("preview"):
+        score += 1          # écoutable sans un clic de plus
+    if dl_log_paths(item)[0]:
+        score -= 4          # déjà sur le disque : on fouille pour du neuf
+    return score
+
+
+def _hunt_run(theme, terms, sources):
+    harvest, report, dead = {}, [], set()
+
+    def do(term, origin):
+        found = fresh = 0
+        for source in sources:
+            if source in dead:
+                continue
+            try:
+                results, from_cache = _hunt_one(source, term)
+            except Exception as e:
+                # Une source qui tombe ne doit pas coûter dix-huit échecs :
+                # elle sort de la rotation et le rapport le dit une fois.
+                dead.add(source)
+                with _hunt_lock:
+                    _hunt["errors"].append(f"{source} — {e}")
+                continue
+            for r in results:
+                k = item_key(r)
+                if k in harvest:
+                    if term not in harvest[k]["terms"]:
+                        harvest[k]["terms"].append(term)
+                else:
+                    harvest[k] = {"item": r, "terms": [term]}
+                    fresh += 1
+                found += 1
+            if not from_cache:
+                # Espacer : quinze requêtes d'affilée sur la même source
+                # ressemblent à du moissonnage et finissent limitées.
+                time.sleep(HUNT_SPACING_S)
+        report.append({"term": term, "origin": origin, "found": found, "new": fresh})
+        with _hunt_lock:
+            _hunt["step"] += 1
+            _hunt["report"] = list(report)
+
+    with _hunt_lock:
+        _hunt["steps"] = len(terms) + HUNT_PASS2_TERMS + 1   # +1 : le classement
+
+    for term in terms:
+        with _hunt_lock:
+            _hunt["current"] = term
+        do(term, "champ")
+
+    # ── Passe 2 : le vocabulaire du fonds lui-même ────────────────────────
+    known = {x.lower() for x in terms} | set(_tokens(theme))
+    rel = related_terms([e["item"] for e in harvest.values()], theme)
+    pass2 = [x for x in (rel["keywords"] + rel["creators"])
+             if x.lower() not in known][:HUNT_PASS2_TERMS]
+    with _hunt_lock:
+        _hunt["pass2"] = pass2
+        _hunt["steps"] = len(terms) + len(pass2) + 1
+    for term in pass2:
+        with _hunt_lock:
+            _hunt["current"] = f"{term} (du fonds)"
+        do(term, "fonds")
+
+    # ── Classement ────────────────────────────────────────────────────────
+    entries = list(harvest.values())[:HUNT_KEEP]
+    rels, ranking = {}, ""
+    with _hunt_lock:
+        _hunt["current"] = f"classement de {len(entries)} documents"
+    try:
+        # La requête est le CHAMP d'origine, pas le thème (cf. plus haut) et
+        # pas les termes du fonds : « city » ou « field-recording » y diluent
+        # le thème autant qu'ils élargissent la récolte.
+        query = " ".join(terms) or theme
+        vecs = _embed([f"search_query: {query}"]
+                      + [f"search_document: {_doc_text(e['item'])}" for e in entries])
+        for e, v in zip(entries, vecs[1:]):
+            rels[id(e)] = _cos(vecs[0], v)
+        ranking = f"proximité au thème ({EMBED_MODEL})"
+    except Exception as err:
+        # Sans plongement on retombe sur les mots-clés, et on le DIT : un
+        # classement dégradé en silence se lirait comme un mauvais fonds.
+        ranking = f"mots-clés seuls — plongement indisponible ({err})"
+        with _hunt_lock:
+            _hunt["errors"].append(ranking)
+
+    ranked = sorted(entries, key=lambda e: _hunt_score(e, rels.get(id(e))), reverse=True)
+    with _hunt_lock:
+        _hunt["results"] = [{**e["item"], "hits": e["terms"],
+                             "rel": round(rels.get(id(e), 0.0), 3),
+                             "score": round(_hunt_score(e, rels.get(id(e))), 2)}
+                            for e in ranked]
+        _hunt["ranking"] = ranking
+        _hunt["step"] += 1
+        _hunt["current"] = ""
+        _hunt["running"] = False
+
+
+@app.route("/api/hunt/field", methods=["GET", "POST"])
+def api_hunt_field():
+    # GET : juste de quoi peupler la modale. Faire tourner un modèle de 8 Go
+    # pour lire une liste de sources serait absurde.
+    if request.method == "GET":
+        return jsonify({"models": HUNT_MODELS, "sources": HUNT_SOURCES,
+                        "default": HUNT_MODEL})
+    theme = ((request.get_json(silent=True) or {}).get("theme") or "").strip()
+    if not theme:
+        return jsonify({"error": "Donne un thème."}), 400
+    terms, note = expand_field(theme, model=(request.get_json(silent=True) or {}).get("model"))
+    return jsonify({"terms": terms, "note": note, "models": HUNT_MODELS,
+                    "sources": HUNT_SOURCES})
+
+
+@app.route("/api/hunt", methods=["POST"])
+def api_hunt():
+    with _hunt_lock:
+        if _hunt["running"]:
+            return jsonify({"error": "Une fouille est déjà en cours."}), 409
+    body = request.get_json(silent=True) or {}
+    theme = (body.get("theme") or "").strip()
+    terms = _clean_terms(body.get("terms") or [])
+    sources = [s for s in (body.get("sources") or HUNT_SOURCES) if s in SOURCES]
+    if not terms or not sources:
+        return jsonify({"error": "Il faut au moins un terme et une source."}), 400
+    with _hunt_lock:
+        _hunt.update(running=True, step=0, steps=len(terms) + HUNT_PASS2_TERMS + 1,
+                     current="", theme=theme, terms=terms, report=[],
+                     results=[], errors=[], pass2=[], ranking="")
+    threading.Thread(target=_hunt_run, args=(theme, terms, sources), daemon=True).start()
+    return jsonify({"started": True, "terms": terms, "sources": sources})
+
+
+@app.route("/api/hunt/status")
+def api_hunt_status():
+    with _hunt_lock:
+        d = dict(_hunt)
+    # La récolte complète reste au serveur : cent vingt cartes suffisent à
+    # trier, mille étoufferaient la page.
+    d["kept"] = len(d["results"])
+    d["results"] = [] if d["running"] else d["results"][:HUNT_RETURN]
+    return jsonify(d)
 
 
 @app.route("/api/search")

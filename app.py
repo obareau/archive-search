@@ -6,6 +6,7 @@ Commons, LibriVox)."""
 import json
 import os
 import subprocess
+import shutil
 import random
 import threading
 import re
@@ -547,6 +548,11 @@ a.lic:hover { border-color: currentColor; }
     text-transform: uppercase; color: var(--accent); background: var(--accent-soft);
     padding: 1px 6px; border-radius: 3px; white-space: nowrap;
 }
+.badge-taken {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); border: 1px solid var(--line);
+    padding: 0 5px; border-radius: 3px; white-space: nowrap;
+}
 .hist-row {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 9px 11px; border-bottom: 1px solid var(--line-soft);
@@ -768,7 +774,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
     </dialog>
 
     <script>
-        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [], newIds: new Set() };
+        let state = { page: 1, hasMore: false, favoritesView: false, cartView: false, resolvedLinks: [], cart: [], favorites: [], newIds: new Set(), taken: new Set() };
         let items = [];
 
         document.getElementById("source").addEventListener("change", () => {
@@ -869,12 +875,23 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
         async function loadStored() {
             state.cart = await loadList("cart");
             state.favorites = await loadList("favorites");
+            await refreshTaken();
             document.getElementById("cartCount").textContent = state.cart.length;
             document.getElementById("favCount").textContent = state.favorites.length;
             if (state.cartView) { renderResults(state.cart); renderRelated(null); }
             if (state.favoritesView) { renderResults(state.favorites); renderRelated(null); }
         }
         function isInCart(item) { return getCart().some(c => favKey(c) === favKey(item)); }
+
+        // Déjà téléchargé : le serveur ne liste que ce dont le fichier est
+        // encore là, donc un fichier effacé à la main repasse en « à prendre ».
+        async function refreshTaken() {
+            try {
+                const d = await (await fetch("/api/downloads")).json();
+                state.taken = new Set((d.entries || []).filter(e => !e.missing).map(e => e.key));
+            } catch (e) { /* le badge est un confort, pas une fonction */ }
+        }
+        function isTaken(item) { return state.taken.has(favKey(item)); }
         function toggleCart(i) {
             const item = items[i];
             const cart = getCart();
@@ -1028,8 +1045,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
             let html = `<div class="dl-wrap">
                 <div class="dl-line"><span>${head}</span><span class="dl-file" title="${file}">${file}</span></div>
                 <div class="dl-bar"><div class="dl-fill ${d.running ? "" : (d.errors.length ? "err" : "done")}" style="width:${d.running ? pct : 100}%"></div></div>`;
+            if (!d.running && (d.reused || []).length) {
+                html += `<div class="dl-sub">↻ ${d.reused.length} repris sans réseau : ${d.reused.join(" | ")}</div>`;
+            }
             if (!d.running && d.errors.length) {
                 html += `<div class="dl-sub">${d.errors.length} ignoré(s) : ${d.errors.join(" | ")}</div>`;
+            }
+            if (!d.running && d.written.length) {
+                html += `<div class="dl-sub">CREDITS.txt écrit dans le dossier du lot — attribution des licences « BY ».</div>`;
             }
             bar.innerHTML = html + "</div>";
         }
@@ -1040,7 +1063,10 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                 renderDl(d);
                 // 500 ms : assez vif pour que la taille bouge visiblement sur
                 // un gros fichier, assez lent pour ne pas marteler le serveur.
-                if (d.running) setTimeout(pollDownload, 500);
+                if (d.running) { setTimeout(pollDownload, 500); return; }
+                // Le lot est fini : le journal a changé, donc les badges aussi.
+                await refreshTaken();
+                if (state.cartView) renderResults(getCart());
             } catch (e) { renderDl({ error: "suivi interrompu : " + e.message }); }
         }
 
@@ -1218,7 +1244,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
                             <button class="fav-btn ${fav ? "active" : ""}" data-idx="${i}" onclick="toggleFavorite(${i})" title="Favori">${fav ? "★" : "☆"}</button>
                         </div>
                     </div>
-                    <div class="item-meta">${isNew(item) ? '<span class="badge-new">nouveau</span>' : ""}<span class="src">${item.source}</span>${licBadge(item)} · ${item.year || item.type} · ${item.creator || "N/A"}</div>
+                    <div class="item-meta">${isNew(item) ? '<span class="badge-new">nouveau</span>' : ""}${isTaken(item) ? '<span class="badge-taken" title="Déjà sur le disque — le relancer le copiera depuis le fichier local, sans réseau">déjà pris</span>' : ""}<span class="src">${item.source}</span>${licBadge(item)} · ${item.year || item.type} · ${item.creator || "N/A"}</div>
                     <div class="item-desc">${item.description || ""}</div>
                     <div class="item-links">
                         <a href="${item.url}" target="_blank" class="item-link">Ouvrir</a>
@@ -1500,6 +1526,23 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(2px); }
 
 DATA_DIR = Path(os.getenv("DATA_DIR", Path.home() / ".local/share/archive-search"))
 
+
+# Panier, favoris, historique, journal : quatre fichiers, la même mécanique.
+# Un fichier illisible vaut « vide » — un JSON tronqué ne doit pas empêcher
+# l'application de démarrer, elle se reconstruit à l'usage.
+def _json_read(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def _json_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)             # remplacement atomique : jamais de liste tronquée
+
 # ── Panier partagé ────────────────────────────────────────────────────────
 # Panier et favoris vivaient en localStorage : une liste par navigateur, perdue au
 # nettoyage du cache et invisible depuis une autre machine. Il vit maintenant
@@ -1517,17 +1560,11 @@ _list_lock = threading.Lock()
 
 
 def _list_read(path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+    return _json_read(path, [])
 
 
 def _list_write(path, items):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)             # remplacement atomique : jamais de liste tronquée
+    _json_write(path, items)
 
 
 @app.route("/api/list/<name>", methods=["GET", "PUT"])
@@ -1564,7 +1601,8 @@ DOWNLOAD_CHUNK = 1 << 16
 DOWNLOAD_RETRIES = 3
 _dl_lock = threading.Lock()
 _dl = {"running": False, "done": 0, "total": 0, "folder": "", "current": "",
-       "bytes": 0, "bytes_total": 0, "attempt": 0, "errors": [], "written": []}
+       "bytes": 0, "bytes_total": 0, "attempt": 0, "errors": [], "written": [],
+       "reused": []}
 
 
 def _safe_subdir(raw):
@@ -1588,6 +1626,150 @@ def _safe_name(name, maxlen=90):
     return (name[:maxlen].strip() or "sans-titre")
 
 
+def _dest_path(folder, item, ext):
+    """Chemin libre dans <lot>/<source>/ — suffixé si le titre est déjà pris."""
+    sub = folder / _safe_name(item.get("source", "divers"), 40)
+    sub.mkdir(parents=True, exist_ok=True)
+    # Beaucoup de titres Freesound finissent par « .wav » : sans ça on
+    # écrirait « pluie.wav.mp3 », qui ment sur le format réel.
+    base = _safe_name(re.sub(r"\.(wav|aiff?|flac|mp3|ogg|m4a)$", "",
+                             item.get("title", "sans-titre"), flags=re.I))
+    dest = sub / (base + ext)
+    n = 1
+    while dest.exists():               # deux sons peuvent porter le même titre
+        dest = sub / f"{base} ({n}){ext}"
+        n += 1
+    return dest
+
+
+# ── Journal des téléchargements ───────────────────────────────────────────
+# Le lot partait sur disque sans laisser de trace : relancer la même recherche
+# trois semaines plus tard ne disait pas que sept des vingt résultats étaient
+# déjà là. C'est le pendant exact de la nouveauté — l'un dit ce qui est apparu
+# à la source, l'autre ce qui est déjà rentré sur le disque.
+DOWNLOADS_FILE = Path(os.getenv("DOWNLOADS_FILE", DATA_DIR / "downloads.json"))
+_dl_log_lock = threading.Lock()
+
+
+def item_key(item):
+    """La même clé que le panier côté page : `source:identifiant`."""
+    ident = item.get("identifier") or item.get("url") or item.get("title") or ""
+    return f"{item.get('source', '')}:{ident}"
+
+
+PATHS_PER_ITEM = 12
+
+
+def _entry_paths(entry):
+    """Les chemins d'une entrée, forme ancienne comprise.
+
+    Le journal a d'abord retenu UN chemin (`path`). C'était faux : le même son
+    sert à deux projets, donc il vit à deux endroits, et n'en retenir qu'un
+    faisait recopier dans un dossier qui l'avait déjà — un doublon « (1) » que
+    rien n'expliquait. Les journaux déjà écrits restent lisibles.
+    """
+    paths = entry.get("paths")
+    if isinstance(paths, list):
+        return [str(x) for x in paths]
+    return [entry["path"]] if entry.get("path") else []
+
+
+def dl_log_note(item, dest, size):
+    lic = item.get("license") or {}
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with _dl_log_lock:
+        log = _json_read(DOWNLOADS_FILE, {})
+        entry = log.get(item_key(item)) or {}
+        # Les chemins morts partent ici : c'est le seul moment où on écrit, et
+        # une liste qui ne s'élague jamais finit par mentir.
+        kept = [p for p in _entry_paths(entry) if p != str(dest) and Path(p).exists()]
+        log[item_key(item)] = {
+            "title": item.get("title", ""), "source": item.get("source", ""),
+            "identifier": item.get("identifier", ""), "url": item.get("url", ""),
+            "creator": item.get("creator", ""),
+            "license": lic.get("code", ""), "license_url": lic.get("url", ""),
+            "paths": [str(dest)] + kept[:PATHS_PER_ITEM - 1],
+            "size": size, "at": now,
+            "first_at": entry.get("first_at") or now,
+        }
+        _json_write(DOWNLOADS_FILE, log)
+
+
+def dl_log_paths(item):
+    """(entrée, chemins encore présents) — le plus récent d'abord.
+
+    ⚠️ Le test d'existence n'est pas une précaution de style : un fichier
+    effacé à la main doit se re-télécharger, pas afficher « déjà pris » sur
+    une carte dont le fichier a disparu.
+    """
+    with _dl_log_lock:
+        entry = _json_read(DOWNLOADS_FILE, {}).get(item_key(item))
+    if not entry:
+        return None, []
+    live = [Path(x) for x in _entry_paths(entry) if Path(x).exists()]
+    return (entry if live else None), live
+
+
+# ── Fiche de crédits ──────────────────────────────────────────────────────
+# Le badge de licence dit « réutilisable avec attribution », et rien ne
+# produisait l'attribution : le lot descendait sans un mot sur l'auteur. Un
+# fichier texte à côté des médias suffit — les champs sont déjà dans l'item.
+CREDITS_HEADER = """CRÉDITS — fichiers récupérés avec Archive Search
+================================================
+
+Les licences Creative Commons en « BY » IMPOSENT de créditer l'auteur. Ce
+fichier donne de quoi le faire ; il ne dispense pas de le faire.
+
+Une licence « non déclarée » ou « non reconnue » n'est PAS une autorisation :
+l'absence d'information veut dire qu'il faut aller vérifier à la source.
+"""
+
+
+def _credit_line(item, filename):
+    lic = item.get("license") or {}
+    code = lic.get("code") or "non déclarée"
+    lines = [
+        f"· {item.get('title') or 'sans-titre'}",
+        f"  fichier : {filename}",
+        f"  auteur  : {item.get('creator') or 'inconnu'}",
+        f"  source  : {item.get('source', '')} — {item.get('url', '')}",
+        f"  licence : {code}" + (f"  {lic['url']}" if lic.get("url") else ""),
+    ]
+    if lic.get("free") is not True:
+        lines.append("  ⚠ vérifier avant publication : " + (
+            "licence restrictive (pas de modification et/ou pas de commercial)"
+            if lic.get("free") is False else "licence inconnue"))
+    return "\n".join(lines)
+
+
+def write_credits(folder, entries):
+    """Ajoute la fiche du lot — `entries` est une liste de (fichier, bloc).
+
+    AJOUT, jamais écrasement : au fil d'un projet on télécharge plusieurs fois
+    dans le même dossier, et le second lot ne doit pas effacer l'attribution du
+    premier. Un fichier déjà crédité ici n'est pas recrédité : reprendre un lot
+    dans le même dossier ne doit pas empiler trois fois le même paragraphe.
+    """
+    if not entries:
+        return
+    path = folder / "CREDITS.txt"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        lines = [block for name, block in entries
+                 if f"fichier : {name}" not in existing]
+        if not lines:
+            return
+        with open(path, "a", encoding="utf-8") as fh:
+            if not existing:
+                fh.write(CREDITS_HEADER)
+            fh.write(f"\n── lot du {time.strftime('%Y-%m-%d %H:%M')} "
+                     f"{'─' * 34}\n\n" + "\n\n".join(lines) + "\n")
+    except OSError as e:
+        # Les fichiers sont là, c'est l'essentiel : un crédit manquant se
+        # journalise, il ne transforme pas un lot réussi en échec.
+        print(f"[credits] fiche non écrite dans {folder} : {e}", flush=True)
+
+
 def _resolve_download_url(item):
     """(url, raison_du_refus). Seules les sources donnant un VRAI fichier passent."""
     source = item.get("source", "")
@@ -1606,10 +1788,43 @@ def _resolve_download_url(item):
 
 
 def _download_worker(items, folder):
+    credits = []
     for item in items:
         title = item.get("title", "sans-titre")
         with _dl_lock:
             _dl["current"] = title
+
+        # Déjà sur le disque : on ne redemande rien au réseau. Deux cas, et
+        # c'est la DESTINATION qui les sépare — pas question de refuser tout
+        # doublon, le même son sert à deux projets rangés dans deux dossiers.
+        prior, live = dl_log_paths(item)
+        if prior:
+            try:
+                # Un chemin DÉJÀ sous la destination tranche : on ne recopie
+                # pas un fichier dans le dossier qui le contient.
+                here = next((x for x in live
+                             if folder.resolve() in x.resolve().parents), None)
+                if here:
+                    src = here
+                    note = f"déjà dans ce dossier ({prior['at'][:10]})"
+                else:
+                    src = live[0]
+                    dest = _dest_path(folder, item, src.suffix or ".bin")
+                    shutil.copy2(src, dest)
+                    dl_log_note(item, dest, dest.stat().st_size)
+                    src = dest
+                    note = f"copié du lot du {prior['at'][:10]}, sans réseau"
+                credits.append((src.name, _credit_line(item, src.name)))
+                with _dl_lock:
+                    _dl["reused"].append(f"{title} — {note}")
+                    _dl["written"].append(str(src.relative_to(folder)))
+                    _dl["done"] += 1
+                continue
+            except Exception as e:
+                # Copie impossible (droits, disque plein) : on retombe sur le
+                # téléchargement normal plutôt que de perdre le fichier.
+                print(f"[dl] reprise locale impossible pour « {title} » : {e}", flush=True)
+
         url, refus = _resolve_download_url(item)
         if not url:
             with _dl_lock:
@@ -1617,17 +1832,8 @@ def _download_worker(items, folder):
                 _dl["done"] += 1
             continue
         try:
-            sub = folder / _safe_name(item.get("source", "divers"), 40)
-            sub.mkdir(parents=True, exist_ok=True)
             ext = os.path.splitext(urlparse(url).path)[1][:8] or ".bin"
-            # Beaucoup de titres Freesound finissent par « .wav » : sans ça on
-            # écrirait « pluie.wav.mp3 », qui ment sur le format réel.
-            base = _safe_name(re.sub(r"\.(wav|aiff?|flac|mp3|ogg|m4a)$", "", title, flags=re.I))
-            dest = sub / (base + ext)
-            n = 1
-            while dest.exists():           # deux sons peuvent porter le même titre
-                dest = sub / f"{base} ({n}){ext}"
-                n += 1
+            dest = _dest_path(folder, item, ext)
             # Reprise : une coupure réseau ou un 5xx passager ne doit pas
             # condamner un fichier au milieu d'un lot de trente.
             last = None
@@ -1665,6 +1871,8 @@ def _download_worker(items, folder):
                         time.sleep(2 ** attempt)
             if last:
                 raise last
+            dl_log_note(item, dest, dest.stat().st_size)
+            credits.append((dest.name, _credit_line(item, dest.name)))
             with _dl_lock:
                 _dl["written"].append(str(dest.relative_to(folder)))
         except Exception as e:
@@ -1673,6 +1881,7 @@ def _download_worker(items, folder):
         finally:
             with _dl_lock:
                 _dl["done"] += 1
+    write_credits(folder, credits)
     with _dl_lock:
         _dl["running"] = False
         _dl["current"] = ""
@@ -1695,7 +1904,8 @@ def api_download():
     folder.mkdir(parents=True, exist_ok=True)
     with _dl_lock:
         _dl.update(running=True, done=0, total=len(items), folder=str(folder),
-                   current="", bytes=0, bytes_total=0, attempt=0, errors=[], written=[])
+                   current="", bytes=0, bytes_total=0, attempt=0, errors=[],
+                   written=[], reused=[])
     threading.Thread(target=_download_worker, args=(items, folder), daemon=True).start()
     return jsonify({"started": True, "folder": str(folder), "total": len(items)})
 
@@ -1747,6 +1957,22 @@ def api_download_mkdir():
     except OSError as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"path": str(target.relative_to(DOWNLOAD_DIR.resolve()))})
+
+
+@app.route("/api/downloads")
+def api_downloads():
+    """Le journal, avec `missing` pour ce qui n'est plus sur le disque. On ne
+    purge PAS l'entrée : la dire absente permet de la re-télécharger, l'effacer
+    en silence ferait croire qu'on ne l'a jamais eue."""
+    with _dl_log_lock:
+        log = _json_read(DOWNLOADS_FILE, {})
+    entries = []
+    for k, e in log.items():
+        live = [x for x in _entry_paths(e) if Path(x).exists()]
+        entries.append({**e, "key": k, "paths": live or _entry_paths(e),
+                        "copies": len(live), "missing": not live})
+    entries.sort(key=lambda e: e.get("at") or "", reverse=True)
+    return jsonify({"entries": entries})
 
 
 @app.route("/api/download/status")
@@ -1810,17 +2036,11 @@ def _hist_key(source, query, search_type, sort, collection):
 
 
 def _hist_read():
-    try:
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return _json_read(HISTORY_FILE, {})
 
 
 def _hist_write(data):
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HISTORY_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(HISTORY_FILE)
+    _json_write(HISTORY_FILE, data)
 
 
 def record_search(source, query, search_type, sort, collection, page, results):

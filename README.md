@@ -141,10 +141,53 @@ droits, et le filtre ne fait pas de ce gris un feu vert.
 Le filtre porte sur les résultats **déjà reçus** — il ne rapatrie pas d'autres
 pages pour remplir l'écran.
 
+## Journal des téléchargements
+
+Chaque fichier écrit est noté dans `downloads.json` (à côté du panier), avec
+tous les endroits où il a été rangé. Une carte dont le fichier est encore sur
+le disque porte **déjà pris**.
+
+Reprendre un item déjà pris ne redemande **rien au réseau** :
+
+| Situation | Ce qui se passe |
+|---|---|
+| le fichier est déjà sous le dossier choisi | rien, le lot le signale |
+| il est ailleurs sur le disque | **copie locale**, sans réseau |
+| il a été effacé ou déplacé à la main | téléchargement normal |
+
+⚠️ Pas de refus du doublon : le même son sert à deux projets rangés dans deux
+dossiers, et bloquer la seconde copie serait pire que de la faire. C'est la
+**destination** qui décide, pas la présence dans le journal.
+
+⚠️ Le journal retient **plusieurs chemins par item**, et ce n'est pas du
+confort : n'en garder qu'un faisait recopier un fichier dans le dossier qui le
+contenait déjà, avec un doublon `(1)` que rien n'expliquait. Les chemins morts
+sont élagués à l'écriture suivante.
+
+⚠️ **Le journal commence le 2026-10-11.** Les lots téléchargés avant ne s'y
+trouvent pas — rien ne permet de remonter d'un nom de fichier à son
+identifiant de source, donc aucun rattrapage n'est tenté.
+
+## Fiche de crédits
+
+Chaque lot écrit un `CREDITS.txt` dans son dossier : titre, auteur, source,
+URL, licence. Les licences en « BY » **imposent** de créditer ; le badge le
+disait, rien ne le permettait.
+
+Un item dont la licence n'est pas franchement réutilisable porte un `⚠` avec
+la raison — restrictive, ou inconnue. Une licence absente n'est pas une
+autorisation.
+
+⚠️ **Ajout, jamais écrasement** : au fil d'un projet on télécharge plusieurs
+fois dans le même dossier, et le second lot ne doit pas effacer l'attribution
+du premier. Un fichier déjà crédité là n'est pas recrédité, donc reprendre un
+lot n'empile pas le même paragraphe.
+
 ## Lancer
 
 ```bash
-uv run app.py          # port 5556 par défaut, ou $ARCHIVE_PORT
+uv run app.py              # port 5556 par défaut, ou $ARCHIVE_PORT
+uv run test_downloads.py   # journal + fiche de crédits
 ```
 
 ## Notes

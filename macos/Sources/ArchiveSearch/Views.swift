@@ -97,6 +97,7 @@ struct ContentView: View {
         .navigationTitle("Archive Search")
         .navigationSubtitle(model.statusLine)
         .onAppear { searchFocused = true }
+        .task { await Demo.run(model: model, hunt: hunt, library: library) { pane = $0 } }
         .onChange(of: model.shownLabel) { pane = .results }
         .onChange(of: watch.pendingReplay) {
             if let q = watch.pendingReplay { model.replay(q); pane = .results; watch.pendingReplay = nil }

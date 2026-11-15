@@ -89,7 +89,7 @@ public enum Hunt {
     - no duplicates, no French
     """
 
-    static let translateInstructions = "Translate the user's text to natural English. Use the usual English name for things (for example « orgue de barbarie » is a barrel organ). If it is already English, repeat it. Answer with the translation only."
+    static let translateInstructions = "Translate the user's text to natural English. Use the usual English name for things (for example « orgue de barbarie » is a barrel organ, « corne de brume » is a foghorn, « brume » is fog or mist, never smoke). If it is already English, repeat it. Answer with the translation only."
 
     public struct Field: Sendable {
         public var terms: [String]
@@ -310,10 +310,17 @@ public enum Hunt {
             p.errors.append(p.ranking)
         }
         let taken = Journal.takenKeys()
+        // La centralité ne compte que les termes du CHAMP. Les termes du fonds
+        // élargissent la récolte, ils n'attestent pas qu'un document est dans
+        // le thème : mesuré le 2026-11-15, « netherlands » (passe 2) donnait un
+        // point de plus à trois prises de vent sur la Meuse (proximité 0,89),
+        // qui passaient devant « Fog horn as heard from shore » (0,94).
+        let field = Set(terms)
         p.results = entries.map { e in
             let r = rels[e.item.key]
+            let hits = e.terms.filter(field.contains).count
             return Ranked(item: e.item, hits: e.terms, rel: r,
-                          score: score(item: e.item, hits: e.terms.count, rel: r, taken: taken.contains(e.item.key)))
+                          score: score(item: e.item, hits: hits, rel: r, taken: taken.contains(e.item.key)))
         }.sorted { $0.score > $1.score }
         p.step += 1
         p.current = ""

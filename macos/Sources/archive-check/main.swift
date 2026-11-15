@@ -245,6 +245,34 @@ do {  // le plongement local classe le foghorn devant le vaporisateur (sans rés
     }
 }
 
+do {  // un terme du fonds n'achète pas de centralité (cas mesuré : vent sur la Meuse devant un foghorn)
+    func fs(_ id: String, _ title: String, _ desc: String, _ kw: [String]) -> Item {
+        Item(title: title, creator: "klankbeeld", year: "2025", type: "son", description: desc, url: "", thumbnail: "",
+             source: "freesound", identifier: id, keywords: kw, license: lic("CC BY", true), preview: "p")
+    }
+    let wind = [fs("w1", "wind riverside Meuse Netherlands 749 PM", "Wind in trees and bushes on April day at the river Maas near Bokhoven in the south of the Netherlands. Birds and far the hum of an inland ship", ["netherlands"]),
+                fs("w2", "wind riverside Meuse Netherlands 754 PM", "Wind in trees and bushes at the river Maas in the south of the Netherlands", ["netherlands"])]
+    let horn = fs("h1", "Fog horn as heard from shore", "Down by the shore on a very foggy morning. Gentle waves from the wash of a passing ship with a couple of blasts from a distant foghorn", ["foghorn"])
+    let sema = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var p = Hunt.Progress()
+    Task {
+        p = await Hunt.run(theme: "brume et cornes de brume", terms: ["fog bank", "foghorn blast"], sources: ["freesound"],
+                           queryText: "Fog and foghorns on a night coast",
+                           search: { _, term in
+                               switch term {
+                               case "fog bank": return wind
+                               case "foghorn blast": return [horn]
+                               case "netherlands": return wind
+                               default: return []
+                               }
+                           }, spacing: 0) { _ in }
+        sema.signal()
+    }
+    sema.wait()
+    check(p.pass2.contains("netherlands"), "netherlands vient bien du fonds : \(p.pass2)")
+    check(p.results.first?.item.identifier == "h1", "le foghorn devant le vent de la Meuse : \(p.results.map { "\($0.item.identifier) \(String(format: "%.2f", $0.score))" })")
+}
+
 // ── Mesure de la fouille : archive-check --hunt "thème" ───────────────────
 if let i = CommandLine.arguments.firstIndex(of: "--hunt"), i + 1 < CommandLine.arguments.count {
     let theme = CommandLine.arguments[i + 1]

@@ -201,7 +201,7 @@ struct HuntReport: View {
                 TableColumn("Trouvés") { y in Text("\(y.found)").monospacedDigit() }.width(60)
                 TableColumn("Neufs") { y in Text("\(y.new)").monospacedDigit() }.width(50)
             }
-            .frame(minHeight: 280)
+            .frame(minHeight: 560)
             if !p.errors.isEmpty {
                 ForEach(p.errors, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout) }
             }

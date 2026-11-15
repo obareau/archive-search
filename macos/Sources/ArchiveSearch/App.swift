@@ -4,13 +4,28 @@ import SwiftUI
 @main
 struct ArchiveSearchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @StateObject private var library = LibraryModel()
+    @StateObject private var downloads = DownloadModel()
 
     var body: some Scene {
         WindowGroup("Archive Search") {
             ContentView()
+                .environmentObject(library)
+                .environmentObject(downloads)
         }
         .defaultSize(width: 1180, height: 760)
-        .commands { SearchCommands() }
+        .commands {
+            SearchCommands()
+            CommandGroup(after: .newItem) {
+                Divider()
+                Button("Importer les données de la version web…") { importLegacyData(library: library) }
+                Button("Ouvrir le dossier des téléchargements") {
+                    let root = Downloader.defaultRoot
+                    try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(root)
+                }
+            }
+        }
 
         Settings {
             SettingsView()

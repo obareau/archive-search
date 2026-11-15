@@ -10,6 +10,19 @@ public struct License: Codable, Hashable, Sendable {
     public var url: String
 
     public static let none = License(code: "", label: "", free: nil, url: "")
+
+    public init(code: String, label: String, free: Bool?, url: String) {
+        self.code = code; self.label = label; self.free = free; self.url = url
+    }
+    // Les fichiers de la version Flask omettent parfois `label`.
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        code = (try? c.decodeIfPresent(String.self, forKey: .code)) ?? ""
+        label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? code
+        free = try? c.decodeIfPresent(Bool.self, forKey: .free)
+        url = (try? c.decodeIfPresent(String.self, forKey: .url)) ?? ""
+    }
+    enum CodingKeys: String, CodingKey { case code, label, free, url }
 }
 
 /// Un résultat, quelle que soit la source. Mêmes champs que le dict Python,

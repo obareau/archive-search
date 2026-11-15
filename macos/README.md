@@ -14,7 +14,7 @@ swift run --package-path macos archive-check --live   # auto-test + une requête
 | Étape | Contenu | État |
 |---|---|---|
 | 1 | Recherche sur les sources, licences, propositions connexes, lecteur | **fait** |
-| 2 | Panier et favoris, téléchargement, journal, `CREDITS.txt` | à faire |
+| 2 | Panier et favoris, téléchargement, journal, `CREDITS.txt` | **fait** |
 | 3 | Historique, nouveautés, veille et notifications | à faire |
 | 4 | Fouille : FoundationModels + `NLContextualEmbedding`, classement remesuré | à faire |
 
@@ -29,6 +29,22 @@ swift run --package-path macos archive-check --live   # auto-test + une requête
   `$FREESOUND_TOKEN` prime. Pas le Trousseau : avec une signature ad hoc, chaque
   build change d'identité et il redemanderait le mot de passe à chaque lancement.
 - **Library of Congress** : toujours un renvoi, ouvert dans le navigateur.
+- **Dossier de téléchargement** : le dialogue natif (`NSOpenPanel`) remplace le
+  navigateur de dossiers fait main et la validation `_safe_subdir` — ils
+  n'existaient que parce que le disque était celui d'un serveur. Racine par
+  défaut `~/archive-search-downloads` (`$DOWNLOAD_DIR`) ; la choisir telle quelle
+  range le lot dans `<AAAA-MM-JJ_HHMM>/`.
+- **Un refus 4xx n'est plus retenté** : un item réservé (archive.org répond 401
+  sur certains) ne coûtait que trois essais et quatorze secondes d'attente.
+- **Arrêter** un lot en cours : rien d'incomplet n'est gardé.
+- **Données de la version web** : Fichier › Importer… reprend `cart.json`,
+  `favorites.json`, `downloads.json` et `history.json` d'une copie de
+  `~/.local/share/archive-search`, par fusion. Les chemins du journal écrits sur
+  l'ancien serveur n'existent pas ici : ces entrées s'affichent « disparu ».
+
+⚠️ La progression se lit sur la tâche toutes les 0,4 s : l'observation KVO de
+`task.progress` ne remonte rien pour un téléchargement async (barre figée à
+0 Ko sur 127 Mo, constaté le 2026-11-15).
 
 ⚠️ Pas de `VideoPlayer` SwiftUI : compilé sans Xcode, `_AVKit_SwiftUI` plante à
 l'initialisation de ses métadonnées dès qu'un film s'affiche (SIGABRT,

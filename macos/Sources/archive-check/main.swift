@@ -4,6 +4,15 @@
 import ArchiveCore
 import Foundation
 
+// Données dans un dossier jetable : l'auto-test ne touche jamais au vrai
+// panier ni au vrai journal.
+let TMP = FileManager.default.temporaryDirectory.appendingPathComponent("archive-check-\(ProcessInfo.processInfo.processIdentifier)")
+try? FileManager.default.createDirectory(at: TMP, withIntermediateDirectories: true)
+setenv("DATA_DIR", TMP.path, 1)
+setenv("DOWNLOADS_FILE", TMP.appendingPathComponent("downloads.json").path, 1)
+setenv("DOWNLOAD_DIR", TMP.appendingPathComponent("dl").path, 1)
+defer { try? FileManager.default.removeItem(at: TMP) }
+
 var failures = 0
 var passed = 0
 func check(_ cond: Bool, _ what: String) {
@@ -43,6 +52,107 @@ let legacy = #"{"title":"T","creator":"C","year":1956,"type":"movies","descripti
 let decoded = try? JSONDecoder().decode(Item.self, from: Data(legacy.utf8))
 check(decoded?.year == "1956" && decoded?.key == "archive.org:abc", "item Flask relu")
 
+
+// ── Journal et crédits (port de test_downloads.py) ───────────────────────
+let fm = FileManager.default
+func lic(_ code: String, _ free: Bool?) -> License { License(code: code, label: code, free: free, url: code.isEmpty ? "" : "https://x/\(code)") }
+let SON = Item(title: "Pluie sur tôle.wav", creator: "fieldrec", year: "", type: "son", description: "",
+               url: "https://freesound.org/s/4242/", thumbnail: "", source: "freesound", identifier: "4242",
+               license: lic("CC BY", true))
+let FILM = Item(title: "Coronet Instructional", creator: "Coronet", year: "", type: "movies", description: "",
+                url: "https://archive.org/details/coronet01", thumbnail: "", source: "archive.org", identifier: "coronet01",
+                license: lic("", nil))
+let ND = Item(title: "Piste verrouillée", creator: "qqn", year: "", type: "son", description: "", url: "u",
+              thumbnail: "", source: "freesound", identifier: "9", license: lic("CC BY-NC-ND", false))
+func touch(_ u: URL) { try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); fm.createFile(atPath: u.path, contents: Data("x".utf8)) }
+
+check(SON.key == "freesound:4242", "clé identique au panier")
+
+do {  // un fichier disparu est oublié
+    let f = TMP.appendingPathComponent("pluie.wav"); touch(f)
+    Journal.note(SON, dest: f, size: 4)
+    let (e, live) = Journal.live(SON)
+    check(e != nil && live.map(\.path) == [f.path] && e?.license == "CC BY", "journal note un fichier")
+    check(Journal.live(FILM).0 == nil, "item jamais pris → rien")
+    try? fm.removeItem(at: f)
+    check(Journal.live(SON).0 == nil && Journal.live(SON).1.isEmpty, "fichier effacé à la main → à reprendre")
+}
+do {  // chaque emplacement est retenu, le plus récent d'abord, élagage des morts
+    let a = TMP.appendingPathComponent("projA/s.mp3"), b = TMP.appendingPathComponent("projB/s.mp3")
+    touch(a); touch(b)
+    Journal.note(SON, dest: a, size: 1); Journal.note(SON, dest: b, size: 1)
+    let live = Journal.live(SON).1.map(\.path)
+    check(Set(live) == [a.path, b.path] && live.first == b.path, "deux emplacements, le plus récent d'abord : \(live)")
+    try? fm.removeItem(at: a)
+    Journal.note(SON, dest: b, size: 1)
+    check(Journal.live(SON).1.map(\.path) == [b.path], "chemin mort élagué")
+}
+do {  // forme ancienne `path`
+    let old = #"{"k":{"title":"t","path":"/x/y.mp3","at":"2026-10-11T10:00:00"},"j":{"paths":["/a","/b"]},"z":{}}"#
+    let d = try? JSONDecoder().decode([String: Journal.Entry].self, from: Data(old.utf8))
+    check(d?["k"]?.paths == ["/x/y.mp3"] && d?["j"]?.paths == ["/a", "/b"] && d?["z"]?.paths == [], "journal ancien relu")
+}
+check(!Credits.line(SON, file: "a.wav").contains("⚠"), "crédit libre sans ⚠")
+check(Credits.line(FILM, file: "b.mp4").contains("licence inconnue") && Credits.line(FILM, file: "b.mp4").contains("non déclarée"), "crédit inconnu signalé")
+check(Credits.line(ND, file: "c.wav").contains("restrictive"), "crédit restrictif signalé")
+do {  // ajout sans écraser
+    let d = TMP.appendingPathComponent("lot"); try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+    Credits.write(in: d, [("a.wav", Credits.line(SON, file: "a.wav"))])
+    Credits.write(in: d, [("b.mp4", Credits.line(FILM, file: "b.mp4"))])
+    let txt = (try? String(contentsOf: d.appendingPathComponent("CREDITS.txt"), encoding: .utf8)) ?? ""
+    check(txt.components(separatedBy: "CRÉDITS").count == 2, "en-tête une seule fois")
+    check(txt.contains("a.wav") && txt.contains("b.mp4") && txt.components(separatedBy: "── lot du").count == 3, "second lot ajouté, pas écrasé")
+}
+do {  // pas de double crédit
+    let d = TMP.appendingPathComponent("lot2"); try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+    Credits.write(in: d, [("a.wav", Credits.line(SON, file: "a.wav"))])
+    Credits.write(in: d, [("a.wav", Credits.line(SON, file: "a.wav"))])
+    let txt = (try? String(contentsOf: d.appendingPathComponent("CREDITS.txt"), encoding: .utf8)) ?? ""
+    check(txt.components(separatedBy: "fichier : a.wav").count == 2 && txt.components(separatedBy: "── lot du").count == 2, "fichier déjà crédité non recrédité")
+}
+do {
+    let d = TMP.appendingPathComponent("vide"); try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+    Credits.write(in: d, [])
+    check(!fm.fileExists(atPath: d.appendingPathComponent("CREDITS.txt").path), "lot vide → pas de fiche")
+}
+do {  // homonymes suffixés, extension réelle
+    let d = TMP.appendingPathComponent("dest")
+    let a = try! Downloader.destPath(d, SON, ext: ".mp3"); touch(a)
+    let b = try! Downloader.destPath(d, SON, ext: ".mp3")
+    check(a.lastPathComponent == "Pluie sur tôle.mp3", "extension réelle, pas .wav.mp3 : \(a.lastPathComponent)")
+    check(b.lastPathComponent == "Pluie sur tôle (1).mp3", "homonyme suffixé : \(b.lastPathComponent)")
+}
+check(Downloader.safeName("../../.ssh/id") == "....sshid" || !Downloader.safeName("../../.ssh/id").contains("/"), "pas de séparateur dans un nom")
+check(!Downloader.safeName(".cache").hasPrefix("."), "pas de point initial")
+do {  // reprise locale : déjà dans le dossier → rien ; ailleurs → copie sans réseau
+    let lotA = TMP.appendingPathComponent("reprise/A"), lotB = TMP.appendingPathComponent("reprise/B")
+    let f = lotA.appendingPathComponent("archive.org/Coronet Instructional.mp4"); touch(f)
+    Journal.note(FILM, dest: f, size: 1)
+    let sema = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var pa = Downloader.Progress(), pb = Downloader.Progress()
+    Task {
+        pa = await Downloader.run([FILM], into: lotA) { _ in }
+        pb = await Downloader.run([FILM], into: lotB) { _ in }
+        sema.signal()
+    }
+    sema.wait()
+    check(pa.reused.first?.contains("déjà dans ce dossier") == true && pa.errors.isEmpty, "déjà sous la destination → rien : \(pa.reused) \(pa.errors)")
+    check(pb.reused.first?.contains("sans réseau") == true && fm.fileExists(atPath: lotB.appendingPathComponent("archive.org/Coronet Instructional.mp4").path), "ailleurs → copie locale : \(pb.reused) \(pb.errors)")
+    check(Journal.live(FILM).1.count == 2, "les deux copies au journal")
+    check(fm.fileExists(atPath: lotB.appendingPathComponent("CREDITS.txt").path), "fiche de crédits écrite")
+}
+do {  // une source sans fichier est écartée avec sa raison
+    let wiki = Item(title: "Phare", creator: "x", year: "", type: "media", description: "", url: "https://commons.wikimedia.org/x",
+                    thumbnail: "", source: "wikimedia", identifier: "File:Phare.jpg")
+    let sema = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var p = Downloader.Progress()
+    Task { p = await Downloader.run([wiki], into: TMP.appendingPathComponent("w")) { _ in }; sema.signal() }
+    sema.wait()
+    check(p.errors.first?.contains("page web") == true && p.done == 1, "wikimedia écarté : \(p.errors)")
+}
+check(Downloader.batchFolder(chosen: Downloader.defaultRoot).lastPathComponent.count == "2026-11-15_1930".count, "racine → sous-dossier horodaté")
+check(Downloader.batchFolder(chosen: TMP).path == TMP.path, "dossier choisi → tel quel")
+
 // ── En ligne ──────────────────────────────────────────────────────────────
 if CommandLine.arguments.contains("--live") {
     let sema = DispatchSemaphore(value: 0)
@@ -63,6 +173,29 @@ if CommandLine.arguments.contains("--live") {
         if let r = try? await Sources.resolveArchiveFile("DuckAndCover_185") {
             print("  fichier      \(r.mediatype) → \(r.url?.absoluteString ?? "aucun")")
         }
+        // Un vrai petit fichier, de bout en bout : .part, journal, crédits.
+        do {
+            let (d, _) = try await URLSession.shared.data(from: URL(string: "https://archive.org/advancedsearch.php?q=collection%3Aopensource_audio+AND+item_size%3A%5B100000+TO+600000%5D+AND+format%3AMP3&fl%5B%5D=identifier&fl%5B%5D=title&rows=1&output=json")!)
+            let doc = (((try JSONSerialization.jsonObject(with: d) as? [String: Any])?["response"] as? [String: Any])?["docs"] as? [[String: Any]])?.first ?? [:]
+            let ident = doc["identifier"] as? String ?? ""
+            let it = Item(title: (doc["title"] as? String) ?? ident, creator: "", year: "", type: "audio", description: "",
+                          url: "https://archive.org/details/\(ident)", thumbnail: "", source: "archive.org", identifier: ident)
+            let dl = TMP.appendingPathComponent("live")
+            let p = await Downloader.run([it], into: dl) { _ in }
+            let ok = p.errors.isEmpty && p.written.count == 1
+            print("  téléchargé   \(ident) → \(p.written.first ?? "rien") \(p.errors.joined(separator: "; "))")
+            check(ok && fm.fileExists(atPath: dl.appendingPathComponent("CREDITS.txt").path), "téléchargement réel")
+            let parts = (fm.enumerator(atPath: dl.path)?.allObjects as? [String] ?? []).filter { $0.hasSuffix(".part") }
+            check(parts.isEmpty, "aucun .part laissé")
+        } catch { check(false, "téléchargement réel : \(error)") }
+        // Un item réservé (401) : écarté au premier essai, avec la raison en clair.
+        let reserved = Item(title: "Réservé", creator: "", year: "", type: "audio", description: "", url: "",
+                            thumbnail: "", source: "archive.org", identifier: "91zii2jfnnmmpcw7gxlt6fs4z9w82uq2sawnt81d")
+        let t0 = Date()
+        nonisolated(unsafe) var maxAttempt = 0
+        let pr = await Downloader.run([reserved], into: TMP.appendingPathComponent("res")) { maxAttempt = max(maxAttempt, $0.attempt) }
+        print("  réservé      \(pr.errors.first ?? "?") — \(maxAttempt) essai(s), \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        check(maxAttempt == 1 && pr.errors.first?.contains("réservé") == true, "4xx non retenté")
         sema.signal()
     }
     sema.wait()

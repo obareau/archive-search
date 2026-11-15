@@ -8,25 +8,69 @@ extension Color {
     static let licBad = Color(red: 0xC0 / 255, green: 0x56 / 255, blue: 0x4A / 255)
 }
 
+enum Pane: String, CaseIterable {
+    case results, cart, favorites, journal
+}
+
 struct ContentView: View {
     @StateObject private var model = SearchModel()
     @StateObject private var player = PlayerModel()
+    @EnvironmentObject var library: LibraryModel
+    @EnvironmentObject var downloads: DownloadModel
     @Local private var showInspector = true
+    @Local private var pane: Pane = .results
     @FocusState private var searchFocused: Bool
+
+    /// L'item sélectionné, où qu'il soit affiché.
+    private var selected: Item? {
+        guard let id = model.selection else { return nil }
+        return model.results.first { $0.id == id }
+            ?? library.cart.first { $0.id == id }
+            ?? library.favorites.first { $0.id == id }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             searchBar
             Divider()
-            if !model.related.isEmpty || !model.results.isEmpty { infoBar; Divider() }
-            resultsList
+            switch pane {
+            case .results:
+                if !model.related.isEmpty || !model.results.isEmpty { infoBar; Divider() }
+                resultsList
+            case .cart:
+                CartBar(); Divider()
+                listOf(library.cart, empty: "Panier vide", hint: "➕ sur un résultat pour l'y mettre. Il se télécharge d'un coup, avec sa fiche de crédits.")
+            case .favorites:
+                listOf(library.favorites, empty: "Aucun favori", hint: "☆ sur un résultat pour le garder sous la main.")
+            case .journal:
+                JournalView()
+            }
+            DownloadStrip()
         }
         .frame(minWidth: 640, minHeight: 420)
         .inspector(isPresented: $showInspector) {
-            PlayerPane(item: model.selectedItem, player: player)
+            PlayerPane(item: selected, player: player)
                 .inspectorColumnWidth(min: 300, ideal: 420, max: 700)
         }
+        .sheet(item: Binding(get: { downloads.finished.map(FinishedBox.init) },
+                             set: { if $0 == nil { downloads.finished = nil } })) { box in
+            DownloadReport(p: box.p, folder: downloads.folder)
+        }
+        .alert("Enregistrement impossible", isPresented: Binding(get: { library.saveError != nil },
+                                                                 set: { if !$0 { library.saveError = nil } })) {
+            Button("OK") {}
+        } message: { Text(library.saveError ?? "") }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Vue", selection: $pane) {
+                    Text("Résultats").tag(Pane.results)
+                    Text("Panier \(library.cart.count)").tag(Pane.cart)
+                    Text("Favoris \(library.favorites.count)").tag(Pane.favorites)
+                    Text("Journal").tag(Pane.journal)
+                }
+                .pickerStyle(.segmented)
+                .help("Résultats, panier (⌘2), favoris (⌘3), journal des téléchargements (⌘4)")
+            }
             ToolbarItemGroup {
                 Button { model.surprise() } label: { Label("Surprise-moi", systemImage: "dice") }
                     .help("Un item au hasard dans une collection vintage d'archive.org")
@@ -37,6 +81,13 @@ struct ContentView: View {
         .navigationTitle("Archive Search")
         .navigationSubtitle(model.statusLine)
         .onAppear { searchFocused = true }
+        .onChange(of: model.shownLabel) { pane = .results }
+        .background {
+            // Raccourcis ⌘1-⌘4 pour changer de vue.
+            ForEach(Array(Pane.allCases.enumerated()), id: \.offset) { i, p in
+                Button("") { pane = p }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
+            }
+        }
         .onChange(of: model.selection) { if model.selection != nil { showInspector = true } }
         .focusedSceneValue(\.searchModel, model)
     }
@@ -53,8 +104,8 @@ struct ContentView: View {
                 TextField("Chercher : films, sons, livres, images…", text: $model.text)
                     .textFieldStyle(.roundedBorder)
                     .focused($searchFocused)
-                    .onSubmit { model.search() }
-                Button(model.source == "loc.gov" ? "Ouvrir ↗" : "Chercher") { model.search() }
+                    .onSubmit { model.search(); pane = .results }
+                Button(model.source == "loc.gov" ? "Ouvrir ↗" : "Chercher") { model.search(); pane = .results }
                     .buttonStyle(.borderedProminent).tint(.amber)
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.text.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -126,7 +177,7 @@ struct ContentView: View {
             } else {
                 List(selection: $model.selection) {
                     ForEach(model.visible) { item in
-                        ResultRow(item: item).tag(item.id)
+                        ResultRow(item: item, taken: library.taken.contains(item.key)).tag(item.id)
                     }
                     if model.page > 1 || model.hasMore { pager.listRowSeparator(.hidden) }
                 }
@@ -138,6 +189,20 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder private func listOf(_ items: [Item], empty: String, hint: String) -> some View {
+        if items.isEmpty {
+            ContentUnavailableView(empty, systemImage: "tray", description: Text(hint))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(selection: $model.selection) {
+                ForEach(items) { item in
+                    ResultRow(item: item, taken: library.taken.contains(item.key)).tag(item.id)
+                }
+            }
+            .listStyle(.inset)
+        }
     }
 
     private var pager: some View {
@@ -175,8 +240,14 @@ struct RelatedRow: View {
     }
 }
 
+struct FinishedBox: Identifiable {
+    let p: Downloader.Progress
+    let id = UUID()
+}
+
 struct ResultRow: View {
     let item: Item
+    var taken = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -189,9 +260,19 @@ struct ResultRow: View {
                 if !item.description.isEmpty {
                     Text(item.description).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
-                LicenseBadge(license: item.license, long: false)
+                HStack(spacing: 6) {
+                    LicenseBadge(license: item.license, long: false)
+                    if taken {
+                        Text("déjà pris").font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.amber.opacity(0.18), in: Capsule())
+                            .foregroundStyle(Color.amber)
+                            .help("Le fichier est déjà sur le disque : le reprendre ne redemandera rien au réseau.")
+                    }
+                }
             }
             Spacer(minLength: 0)
+            ItemButtons(item: item)
         }
         .padding(.vertical, 4)
         .contextMenu {

@@ -31,7 +31,6 @@ final class SearchModel: ObservableObject {
 
     var visible: [Item] { onlyReusable ? results.filter { $0.license?.free == true } : results }
     var hiddenCount: Int { results.count - visible.count }
-    var selectedItem: Item? { results.first { $0.id == selection } }
     var isArchive: Bool { source == "archive.org" }
     var sourceLabel: String { Sources.all.first { $0.id == source }?.label ?? source }
 

@@ -9,7 +9,7 @@ extension Color {
 }
 
 enum Pane: String, CaseIterable {
-    case results, cart, favorites, journal
+    case results, cart, favorites, journal, history
 }
 
 struct ContentView: View {
@@ -17,6 +17,7 @@ struct ContentView: View {
     @StateObject private var player = PlayerModel()
     @EnvironmentObject var library: LibraryModel
     @EnvironmentObject var downloads: DownloadModel
+    @EnvironmentObject var watch: WatchModel
     @Local private var showInspector = true
     @Local private var pane: Pane = .results
     @FocusState private var searchFocused: Bool
@@ -44,6 +45,8 @@ struct ContentView: View {
                 listOf(library.favorites, empty: "Aucun favori", hint: "☆ sur un résultat pour le garder sous la main.")
             case .journal:
                 JournalView()
+            case .history:
+                HistoryView(model: model) { pane = .results }
             }
             DownloadStrip()
         }
@@ -67,9 +70,12 @@ struct ContentView: View {
                     Text("Panier \(library.cart.count)").tag(Pane.cart)
                     Text("Favoris \(library.favorites.count)").tag(Pane.favorites)
                     Text("Journal").tag(Pane.journal)
+                    // Du texte, pas un Label : dans un segment de barre d'outils,
+                    // le Label n'affiche que son icône.
+                    Text(watch.watchedCount > 0 ? "Historique · \(watch.watchedCount) 👁" : "Historique").tag(Pane.history)
                 }
                 .pickerStyle(.segmented)
-                .help("Résultats, panier (⌘2), favoris (⌘3), journal des téléchargements (⌘4)")
+                .help("Résultats (⌘1), panier (⌘2), favoris (⌘3), journal des téléchargements (⌘4), historique et veille (⌘5)")
             }
             ToolbarItemGroup {
                 Button { model.surprise() } label: { Label("Surprise-moi", systemImage: "dice") }
@@ -82,6 +88,9 @@ struct ContentView: View {
         .navigationSubtitle(model.statusLine)
         .onAppear { searchFocused = true }
         .onChange(of: model.shownLabel) { pane = .results }
+        .onChange(of: watch.pendingReplay) {
+            if let q = watch.pendingReplay { model.replay(q); pane = .results; watch.pendingReplay = nil }
+        }
         .background {
             // Raccourcis ⌘1-⌘4 pour changer de vue.
             ForEach(Array(Pane.allCases.enumerated()), id: \.offset) { i, p in
@@ -148,6 +157,11 @@ struct ContentView: View {
                         Text("\(model.hiddenCount) carte\(model.hiddenCount > 1 ? "s" : "") masquée\(model.hiddenCount > 1 ? "s" : "")")
                             .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    if !model.newIDs.isEmpty {
+                        Text("✦ \(model.newIDs.count) nouveauté\(model.newIDs.count > 1 ? "s" : "") depuis la dernière fois")
+                            .foregroundStyle(Color.amber).fontWeight(.medium)
+                    }
                 }
                 .font(.callout)
             }
@@ -177,7 +191,7 @@ struct ContentView: View {
             } else {
                 List(selection: $model.selection) {
                     ForEach(model.visible) { item in
-                        ResultRow(item: item, taken: library.taken.contains(item.key)).tag(item.id)
+                        ResultRow(item: item, taken: library.taken.contains(item.key), isNew: model.isNew(item)).tag(item.id)
                     }
                     if model.page > 1 || model.hasMore { pager.listRowSeparator(.hidden) }
                 }
@@ -248,6 +262,7 @@ struct FinishedBox: Identifiable {
 struct ResultRow: View {
     let item: Item
     var taken = false
+    var isNew = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -261,6 +276,13 @@ struct ResultRow: View {
                     Text(item.description).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
                 HStack(spacing: 6) {
+                    if isNew {
+                        Text("nouveau").font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.amber, in: Capsule())
+                            .foregroundStyle(.black)
+                            .help("Apparu depuis le passage précédent de cette recherche")
+                    }
                     LicenseBadge(license: item.license, long: false)
                     if taken {
                         Text("déjà pris").font(.caption2.weight(.semibold))
@@ -275,6 +297,10 @@ struct ResultRow: View {
             ItemButtons(item: item)
         }
         .padding(.vertical, 4)
+        .overlay(alignment: .leading) {
+            // Liseré ambre, comme la version web.
+            if isNew { Rectangle().fill(Color.amber).frame(width: 3).offset(x: -8) }
+        }
         .contextMenu {
             if let u = URL(string: item.url), !item.url.isEmpty {
                 Link("Ouvrir la page", destination: u)

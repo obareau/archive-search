@@ -15,7 +15,7 @@ swift run --package-path macos archive-check --live   # auto-test + une requête
 |---|---|---|
 | 1 | Recherche sur les sources, licences, propositions connexes, lecteur | **fait** |
 | 2 | Panier et favoris, téléchargement, journal, `CREDITS.txt` | **fait** |
-| 3 | Historique, nouveautés, veille et notifications | à faire |
+| 3 | Historique, nouveautés, veille et notifications | **fait** |
 | 4 | Fouille : FoundationModels + `NLContextualEmbedding`, classement remesuré | à faire |
 
 ## Ce qui change par rapport au Flask
@@ -41,6 +41,14 @@ swift run --package-path macos archive-check --live   # auto-test + une requête
   `favorites.json`, `downloads.json` et `history.json` d'une copie de
   `~/.local/share/archive-search`, par fusion. Les chemins du journal écrits sur
   l'ancien serveur n'existent pas ici : ces entrées s'affichent « disparu ».
+
+- **Veille** : tant que l'app tourne (fermer la fenêtre ne la quitte pas
+  quand une veille est active ; ⌘Q quitte). La date du dernier passage est
+  gardée : un Mac rallumé rattrape le passage manqué 20 s après le lancement.
+  Notifications macOS au lieu de `~/scripts/notify.sh` (absent de ce Mac) ; un
+  clic sur la notification rouvre la recherche.
+- **Pas de restauration de fenêtres** : après un arrêt brutal, macOS relançait
+  l'app sans aucune fenêtre (processus vivant, rien à l'écran).
 
 ⚠️ La progression se lit sur la tâche toutes les 0,4 s : l'observation KVO de
 `task.progress` ne remonte rien pour un téléchargement async (barre figée à

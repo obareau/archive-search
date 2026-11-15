@@ -26,6 +26,10 @@ final class SearchModel: ObservableObject {
     /// « Réutilisable seulement » masque rouge ET gris : inconnu n'est pas libre.
     @Published var onlyReusable = false
     @Published var selection: Item.ID?
+    /// Identifiants apparus depuis le passage précédent de cette recherche.
+    @Published private(set) var newIDs: Set<String> = []
+    /// Bump à chaque recherche enregistrée : la vue Historique se relit.
+    @Published private(set) var historyTick = 0
 
     private var task: Task<Void, Never>?
 
@@ -52,7 +56,15 @@ final class SearchModel: ObservableObject {
             do {
                 let p = try await Sources.search(query)
                 guard !Task.isCancelled else { return }
-                results = p.results; total = p.total; hasMore = p.hasMore
+                // L'historique s'enregistre MÊME sur un cache touché : relancer
+                // est un geste de l'usager, il doit être daté.
+                let fresh = History.record(query, p.results)
+                newIDs = fresh
+                historyTick += 1
+                // Les nouveautés remontent en tête.
+                results = fresh.isEmpty ? p.results
+                    : p.results.filter { fresh.contains(History.seenID($0)) } + p.results.filter { !fresh.contains(History.seenID($0)) }
+                total = p.total; hasMore = p.hasMore
                 related = p.related; self.page = page
                 shownLabel = "« \(q) » · \(sourceLabel)"
                 selection = nil
@@ -64,6 +76,16 @@ final class SearchModel: ObservableObject {
             loading = false
         }
     }
+
+    func isNew(_ item: Item) -> Bool { newIDs.contains(History.seenID(item)) }
+
+    /// Relancer une recherche de l'historique, avec ses réglages.
+    func replay(_ q: SearchQuery) {
+        source = q.source; text = q.text; type = q.type; sort = q.sort; collection = q.collection
+        search(page: 1)
+    }
+
+    func historyChanged() { historyTick += 1 }
 
     /// Une proposition connexe relance sur la MÊME source.
     func searchRelated(_ term: String) {
@@ -77,7 +99,7 @@ final class SearchModel: ObservableObject {
         task = Task {
             do {
                 if let item = try await Sources.randomArchiveItem() {
-                    results = [item]; total = 1; hasMore = false; page = 1
+                    results = [item]; total = 1; hasMore = false; page = 1; newIDs = []
                     related = Related(); shownLabel = "🎲 Surprise"
                     selection = item.id
                 } else {

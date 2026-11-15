@@ -24,11 +24,13 @@ public enum Sources {
         HTTP.url("https://www.loc.gov/audio/", [("q", query)])
     }
 
-    public static func search(_ q: SearchQuery) async throws -> SearchPage {
+    /// `useCache: false` pour la veille : un résultat d'il y a une heure ne
+    /// dirait rien de ce qui vient d'arriver.
+    public static func search(_ q: SearchQuery, useCache: Bool = true) async throws -> SearchPage {
         let text = q.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw SourceError("Requête vide") }
         let key = SearchCache.Key(query: q)
-        if let hit = await SearchCache.shared.get(key) { return hit }
+        if useCache, let hit = await SearchCache.shared.get(key) { return hit }
 
         let (results, total): ([Item], Int?)
         switch q.source {

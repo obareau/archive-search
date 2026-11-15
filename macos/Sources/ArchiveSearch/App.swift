@@ -6,12 +6,26 @@ struct ArchiveSearchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var library = LibraryModel()
     @StateObject private var downloads = DownloadModel()
+    @StateObject private var watch = WatchModel()
+
+    init() {
+        // Pas de restauration de fenêtres : après un arrêt brutal, macOS
+        // relançait l'app SANS fenêtre (processus vivant, rien à l'écran,
+        // constaté le 2026-11-15). Rouvrir l'ancienne fenêtre n'apporte rien
+        // ici ; une fenêtre neuve à chaque lancement, toujours.
+        UserDefaults.standard.register(defaults: [
+            "ApplePersistenceIgnoreState": true,
+            "NSQuitAlwaysKeepsWindows": false,
+        ])
+    }
 
     var body: some Scene {
         WindowGroup("Archive Search") {
             ContentView()
                 .environmentObject(library)
                 .environmentObject(downloads)
+                .environmentObject(watch)
+                .onAppear { watch.start(); delegate.watch = watch }
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
@@ -34,12 +48,18 @@ struct ArchiveSearchApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var watch: WatchModel?
+
     func applicationDidFinishLaunching(_ n: Notification) {
         // Lancé hors bundle (swift run), l'app n'aurait ni Dock ni focus clavier.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+    /// Avec une veille active, fermer la fenêtre ne quitte pas : la veille
+    /// continue, un clic sur l'icône du Dock rouvre la fenêtre. ⌘Q quitte.
+    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool {
+        History.watched().isEmpty
+    }
 }
 
 struct SearchCommands: Commands {

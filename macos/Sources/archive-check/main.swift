@@ -11,6 +11,7 @@ try? FileManager.default.createDirectory(at: TMP, withIntermediateDirectories: t
 setenv("DATA_DIR", TMP.path, 1)
 setenv("DOWNLOADS_FILE", TMP.appendingPathComponent("downloads.json").path, 1)
 setenv("DOWNLOAD_DIR", TMP.appendingPathComponent("dl").path, 1)
+setenv("HISTORY_FILE", TMP.appendingPathComponent("history.json").path, 1)
 defer { try? FileManager.default.removeItem(at: TMP) }
 
 var failures = 0
@@ -152,6 +153,65 @@ do {  // une source sans fichier est écartée avec sa raison
 }
 check(Downloader.batchFolder(chosen: Downloader.defaultRoot).lastPathComponent.count == "2026-11-15_1930".count, "racine → sous-dossier horodaté")
 check(Downloader.batchFolder(chosen: TMP).path == TMP.path, "dossier choisi → tel quel")
+
+
+// ── Historique, nouveauté, veille ────────────────────────────────────────
+func its(_ ids: [String]) -> [Item] {
+    ids.map { Item(title: "t\($0)", creator: "", year: "", type: "", description: "", url: "", thumbnail: "",
+                   source: "archive.org", identifier: $0) }
+}
+do {
+    let q1 = SearchQuery(source: "archive.org", text: "Foghorn ", page: 1)
+    check(History.record(q1, its(["a", "b"])).isEmpty, "recherche inédite : rien de nouveau")
+    let fresh = History.record(q1, its(["a", "b", "c"]))
+    check(fresh == ["c"], "deuxième passage : seul c est neuf (\(fresh))")
+    // La page n'entre pas dans la clé, la casse non plus ; la page 2 ne touche
+    // ni au compteur ni au nombre de passages.
+    var q2 = SearchQuery(source: "archive.org", text: "foghorn", page: 2)
+    q2.page = 2
+    check(History.key(q1) == History.key(q2), "clé sans page ni casse")
+    let f2 = History.record(q2, its(["d"]))
+    let e = History.list().first { $0.key == History.key(q1) }?.entry
+    check(f2 == ["d"] && e?.new_count == 1 && e?.runs == 2 && e?.seen.count == 4, "page 2 : d neuf mais compteur et passages inchangés (\(e?.new_count ?? -1), \(e?.runs ?? -1))")
+    // Un autre type = une autre recherche.
+    check(History.key(SearchQuery(source: "archive.org", text: "foghorn", type: .audio)) != History.key(q1), "le type entre dans la clé")
+}
+do {  // plafond du « déjà vu »
+    let q = SearchQuery(source: "freesound", text: "rain")
+    History.record(q, its((0..<450).map(String.init)))
+    check(History.list().first { $0.key == History.key(q) }?.entry.seen.count == History.seenMax, "déjà vu plafonné à \(History.seenMax)")
+}
+do {  // oubli : le déjà-vu part avec, la relance repart de zéro
+    let q = SearchQuery(source: "wikimedia", text: "phare")
+    History.record(q, its(["x"]))
+    History.forget(History.key(q))
+    check(History.record(q, its(["x", "y"])).isEmpty, "oubliée puis relancée : rien de nouveau")
+}
+do {  // l'historique de la version web se relit
+    let legacy = #"{"archive.org|fog|||":{"query":"fog","source":"archive.org","type":"","sort":"","collection":"","first_seen":"2026-10-11T10:00:00","last_run":"2026-10-12T10:00:00","runs":3,"seen":{"a":"2026-10-11T10:00:00"},"new_count":0,"watch":true}}"#
+    let d = try? JSONDecoder().decode([String: History.Entry].self, from: Data(legacy.utf8))
+    check(d?["archive.org|fog|||"]?.watch == true && d?["archive.org|fog|||"]?.searchQuery.text == "fog", "history.json Flask relu")
+}
+do {  // veille : une source en panne n'arrête pas les autres ; ne parle que s'il y a du neuf
+    History.clear()
+    let ok = SearchQuery(source: "archive.org", text: "fog"), down = SearchQuery(source: "freesound", text: "fog"),
+        calm = SearchQuery(source: "wikimedia", text: "fog")
+    for q in [ok, down, calm] { History.record(q, its(["a"])); History.setWatch(History.key(q), true) }
+    let sema = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var rep = Watch.PassReport()
+    Task {
+        rep = await Watch.pass(spacing: 0) { q in
+            if q.source == "freesound" { throw SourceError("panne") }
+            return its(q.source == "archive.org" ? ["a", "neuf"] : ["a"])
+        }
+        sema.signal()
+    }
+    sema.wait()
+    check(rep.checked == 2 && rep.failures.count == 1, "panne notée, les autres passent (\(rep.checked), \(rep.failures))")
+    check(rep.findings.count == 1 && rep.findings.first?.fresh.map { $0.identifier } == ["neuf"], "seule la recherche avec du neuf parle")
+    History.setWatch(History.key(ok), false)
+    check(History.watched().count == 2, "veille désactivable")
+}
 
 // ── En ligne ──────────────────────────────────────────────────────────────
 if CommandLine.arguments.contains("--live") {

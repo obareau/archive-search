@@ -30,6 +30,9 @@ final class SearchModel: ObservableObject {
     @Published private(set) var newIDs: Set<String> = []
     /// Bump à chaque recherche enregistrée : la vue Historique se relit.
     @Published private(set) var historyTick = 0
+    /// Résultats d'une fouille : par quels termes et à quelle proximité.
+    @Published private(set) var huntInfo: [String: (hits: [String], rel: Double?)] = [:]
+    @Published private(set) var isHunt = false
 
     private var task: Task<Void, Never>?
 
@@ -64,7 +67,7 @@ final class SearchModel: ObservableObject {
                 // Les nouveautés remontent en tête.
                 results = fresh.isEmpty ? p.results
                     : p.results.filter { fresh.contains(History.seenID($0)) } + p.results.filter { !fresh.contains(History.seenID($0)) }
-                total = p.total; hasMore = p.hasMore
+                total = p.total; hasMore = p.hasMore; huntInfo = [:]; isHunt = false
                 related = p.related; self.page = page
                 shownLabel = "« \(q) » · \(sourceLabel)"
                 selection = nil
@@ -75,6 +78,21 @@ final class SearchModel: ObservableObject {
             }
             loading = false
         }
+    }
+
+    /// La récolte classée d'une fouille. Pas d'historique : une fouille de
+    /// quinze termes y créerait quinze entrées.
+    static let huntShown = 120
+    func showHunt(_ ranked: [Hunt.Ranked], theme: String) {
+        task?.cancel(); loading = false; error = nil; notice = nil
+        let shown = Array(ranked.prefix(Self.huntShown))
+        results = shown.map(\.item)
+        huntInfo = Dictionary(uniqueKeysWithValues: shown.map { ($0.item.id, ($0.hits, $0.rel)) })
+        total = ranked.count; hasMore = false; page = 1; newIDs = []; isHunt = true
+        related = relatedTerms(results, query: theme)
+        selection = nil
+        shownLabel = "🔎 « \(theme) »"
+        if ranked.isEmpty { notice = "La fouille n'a rien ramené." }
     }
 
     func isNew(_ item: Item) -> Bool { newIDs.contains(History.seenID(item)) }
@@ -99,7 +117,7 @@ final class SearchModel: ObservableObject {
         task = Task {
             do {
                 if let item = try await Sources.randomArchiveItem() {
-                    results = [item]; total = 1; hasMore = false; page = 1; newIDs = []
+                    results = [item]; total = 1; hasMore = false; page = 1; newIDs = []; huntInfo = [:]; isHunt = false
                     related = Related(); shownLabel = "🎲 Surprise"
                     selection = item.id
                 } else {

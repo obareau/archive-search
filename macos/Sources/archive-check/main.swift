@@ -213,6 +213,75 @@ do {  // veille : une source en panne n'arrête pas les autres ; ne parle que s'
     check(History.watched().count == 2, "veille désactivable")
 }
 
+
+// ── Fouille (port de test_hunt.py) ───────────────────────────────────────
+check(Hunt.cleanTerms([" FogHorn ", "fog  bank", "foghorn"]) == ["foghorn", "fog bank"], "termes nettoyés")
+check(Hunt.cleanTerms(["a"]).isEmpty && Hunt.cleanTerms([String(repeating: "x", count: 60)]).isEmpty, "bornes des termes")
+check(Hunt.cleanTerms(["weatherphenomena"]) == ["weatherphenomena"], "mot collé accepté")
+check(Hunt.cleanTerms((0..<40).map { "t\($0)" }).count == Hunt.termsMax, "plafond de termes")
+check(abs(Hunt.cos([1, 0], [1, 0]) - 1) < 1e-9 && abs(Hunt.cos([1, 0], [0, 1])) < 1e-9 && Hunt.cos([0, 0], [1, 1]) == 0, "cosinus")
+do {
+    let fs = Item(title: "t", creator: "", year: "", type: "", description: "", url: "", thumbnail: "",
+                  source: "freesound", identifier: "i", license: lic("c", true), preview: "p")
+    // Le bug mesuré : « coast river » (0.514, deux termes) passait devant un foghorn (0.708, un terme).
+    check(Hunt.score(item: fs, hits: 1, rel: 0.708, taken: false) > Hunt.score(item: fs, hits: 2, rel: 0.514, taken: false), "la proximité bat la centralité")
+    check(Hunt.score(item: fs, hits: 2, rel: 0.6, taken: false) > Hunt.score(item: fs, hits: 1, rel: 0.6, taken: false), "à proximité égale, la centralité départage")
+    check(Hunt.score(item: fs, hits: 1, rel: 0.6, taken: true) < Hunt.score(item: fs, hits: 1, rel: 0.6, taken: false) - 3, "déjà pris rétrogradé")
+    var nd = fs; nd.license = lic("CC BY-NC-ND", false)
+    check(Hunt.score(item: fs, hits: 1, rel: 0.5, taken: false) > Hunt.score(item: nd, hits: 1, rel: 0.5, taken: false), "licence restrictive derrière")
+    var long = fs; long.description = String(repeating: "d", count: 500)
+    check(Hunt.docTextPublic(long).count < 230, "texte du document borné")
+}
+do {  // le plongement local classe le foghorn devant le vaporisateur (sans réseau)
+    let q = Embedder.shared.vector("fog and foghorns on a night coast")
+    let horn = Embedder.shared.vector("Fog horn as heard from shore — foghorn blowing at night from the lighthouse")
+    let spray = Embedder.shared.vector("Spray Bottle — spritzing a plastic spray bottle in the kitchen")
+    if let q, let horn, let spray {
+        let a = Hunt.cos(q, horn), b = Hunt.cos(q, spray)
+        // Écart observé ~0.1 ; ×14 = 1,4 point, de quoi battre un terme de plus.
+        check(a - b > 0.05, String(format: "foghorn (%.3f) nettement devant le vaporisateur (%.3f)", a, b))
+    } else {
+        check(false, "plongement NaturalLanguage indisponible")
+    }
+}
+
+// ── Mesure de la fouille : archive-check --hunt "thème" ───────────────────
+if let i = CommandLine.arguments.firstIndex(of: "--hunt"), i + 1 < CommandLine.arguments.count {
+    let theme = CommandLine.arguments[i + 1]
+    let sema = DispatchSemaphore(value: 0)
+    Task {
+        let field = await Hunt.expandField(theme)
+        print("champ : \(field.terms.joined(separator: ", "))\n  « \(field.english) » — \(field.note)")
+        let t0 = Date()
+        let p = await Hunt.run(theme: theme, terms: field.terms, sources: Hunt.defaultSources, queryText: field.english) { _ in }
+        print(String(format: "récolte : %d documents en %.0f s · passe 2 : %@", p.harvested, Date().timeIntervalSince(t0), p.pass2.joined(separator: ", ")))
+        for y in p.report { print("  \(y.origin == "fonds" ? "↳" : "·") \(y.term): \(y.found) trouvés, \(y.new) neufs") }
+        for e in p.errors { print("  ⚠ \(e)") }
+        print("classement : \(p.ranking)")
+        let docs = p.results.map(\.item)
+        func show(_ label: String, _ q: String) {
+            guard let qv = Embedder.shared.vector(q) else { print("\(label) : pas de vecteur"); return }
+            let rs = docs.map { ($0, Hunt.cos(qv, Embedder.shared.vector(Hunt.docTextPublic($0)) ?? [])) }.sorted { $0.1 > $1.1 }
+            let top = rs.first?.1 ?? 0, bottom = rs.last?.1 ?? 0
+            let mean = rs.map(\.1).reduce(0, +) / Double(max(1, rs.count))
+            print(String(format: "\n%@ — écart haut/bas %.3f (haut %.3f, moyenne %.3f)", label, top - bottom, top, mean))
+            for (it, r) in rs.prefix(8) { print(String(format: "   %.3f  %@ [%@]", r, String(it.title.prefix(70)), it.source)) }
+            let noise = rs.enumerated().filter { $0.element.0.title.lowercased().contains("spray") || $0.element.0.title.lowercased().contains("spritz") }
+            if !noise.isEmpty { print("   vaporisateurs aux rangs : \(noise.map { $0.offset + 1 })") }
+        }
+        show("requête = champ anglais", field.terms.joined(separator: " "))
+        show("requête = thème traduit", field.english)
+        show("requête = thème français", theme)
+        print("\nclassement final (score) :")
+        for r in p.results.prefix(12) {
+            print(String(format: "   %5.2f  rel %.3f  %d terme(s)  %@ [%@]", r.score, r.rel ?? -1, r.hits.count, String(r.item.title.prefix(60)), r.item.source))
+        }
+        sema.signal()
+    }
+    sema.wait()
+    exit(0)
+}
+
 // ── En ligne ──────────────────────────────────────────────────────────────
 if CommandLine.arguments.contains("--live") {
     let sema = DispatchSemaphore(value: 0)

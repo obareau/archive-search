@@ -18,6 +18,7 @@ struct ContentView: View {
     @EnvironmentObject var library: LibraryModel
     @EnvironmentObject var downloads: DownloadModel
     @EnvironmentObject var watch: WatchModel
+    @StateObject private var hunt = HuntModel()
     @Local private var showInspector = true
     @Local private var pane: Pane = .results
     @FocusState private var searchFocused: Bool
@@ -48,12 +49,17 @@ struct ContentView: View {
             case .history:
                 HistoryView(model: model) { pane = .results }
             }
+            HuntStrip(hunt: hunt)
             DownloadStrip()
         }
         .frame(minWidth: 640, minHeight: 420)
         .inspector(isPresented: $showInspector) {
             PlayerPane(item: selected, player: player)
                 .inspectorColumnWidth(min: 300, ideal: 420, max: 700)
+        }
+        .sheet(isPresented: $hunt.showSheet) { HuntSheet(hunt: hunt, search: model) }
+        .sheet(isPresented: $hunt.showReport) {
+            if let p = hunt.last { HuntReport(p: p, theme: hunt.lastTheme) }
         }
         .sheet(item: Binding(get: { downloads.finished.map(FinishedBox.init) },
                              set: { if $0 == nil { downloads.finished = nil } })) { box in
@@ -78,6 +84,10 @@ struct ContentView: View {
                 .help("Résultats (⌘1), panier (⌘2), favoris (⌘3), journal des téléchargements (⌘4), historique et veille (⌘5)")
             }
             ToolbarItemGroup {
+                Button { hunt.open() } label: { Label("Fouiller", systemImage: "binoculars") }
+                    .help("Fouiller un thème : un champ lexical, plusieurs passes, un classement par proximité (⇧⌘F)")
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(hunt.running)
                 Button { model.surprise() } label: { Label("Surprise-moi", systemImage: "dice") }
                     .help("Un item au hasard dans une collection vintage d'archive.org")
                 Button { showInspector.toggle() } label: { Label("Lecteur", systemImage: "sidebar.right") }
@@ -158,6 +168,9 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if model.isHunt && hunt.last != nil {
+                        Button("Voir le rendement") { hunt.showReport = true }.controlSize(.small)
+                    }
                     if !model.newIDs.isEmpty {
                         Text("✦ \(model.newIDs.count) nouveauté\(model.newIDs.count > 1 ? "s" : "") depuis la dernière fois")
                             .foregroundStyle(Color.amber).fontWeight(.medium)
@@ -191,7 +204,8 @@ struct ContentView: View {
             } else {
                 List(selection: $model.selection) {
                     ForEach(model.visible) { item in
-                        ResultRow(item: item, taken: library.taken.contains(item.key), isNew: model.isNew(item)).tag(item.id)
+                        ResultRow(item: item, taken: library.taken.contains(item.key), isNew: model.isNew(item),
+                                  hunt: model.huntInfo[item.id]).tag(item.id)
                     }
                     if model.page > 1 || model.hasMore { pager.listRowSeparator(.hidden) }
                 }
@@ -263,6 +277,7 @@ struct ResultRow: View {
     let item: Item
     var taken = false
     var isNew = false
+    var hunt: (hits: [String], rel: Double?)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -274,6 +289,11 @@ struct ResultRow: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !item.description.isEmpty {
                     Text(item.description).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                }
+                if let h = hunt {
+                    Text("trouvé par " + h.hits.joined(separator: ", ")
+                         + (h.rel.map { String(format: " · proximité %.2f", $0) } ?? ""))
+                        .font(.caption).foregroundStyle(Color.amber)
                 }
                 HStack(spacing: 6) {
                     if isNew {

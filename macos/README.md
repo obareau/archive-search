@@ -95,8 +95,22 @@ comme sur nomic. `archive-check` fige l'ordre (proximité > centralité, déjà
 pris rétrogradé, licence restrictive derrière) et contrôle sans réseau qu'un
 foghorn passe devant un vaporisateur.
 
+⚠️ **Seuls les termes du champ comptent pour la centralité.** Les termes du
+fonds (passe 2) élargissent la récolte, ils n'attestent pas qu'un document est
+dans le thème : « netherlands » faisait passer trois prises de vent sur la Meuse
+(0,89) devant « Fog horn as heard from shore » (0,94). L'auto-test reproduit le
+cas, et échoue sans la règle.
+
 « geograph » (noms de fichiers geograph.org.uk sur Wikimedia) est écarté de la
 passe 2 : un artefact de la source, pas du vocabulaire du thème.
 
 Si Apple Intelligence est désactivé ou refuse un thème (garde-fous), la note
 de la feuille le dit et le champ se réduit au thème, à compléter à la main.
+
+## Captures du README
+
+Faites par le mode démo, piloté au lancement par des variables
+`ARCHIVE_DEMO_*` (recherche, type, sélection, panier, vue, fouille, rapport ;
+liste dans `Sources/ArchiveSearch/Demo.swift`). Aucune frappe ni aucun clic
+simulé : l'app se met en scène seule, et `screencapture -l` prend sa fenêtre.
+Lancer avec un `DATA_DIR` jetable pour ne pas toucher aux vraies données.

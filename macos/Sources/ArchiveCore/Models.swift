@@ -1,0 +1,151 @@
+import Foundation
+
+/// Licence ramenée à trois états : réutilisable, restreinte, inconnue.
+/// « Inconnu » n'est PAS « libre » — c'est le cas le plus fréquent sur
+/// archive.org, et le plus trompeur. `free == nil` veut dire qu'on ne sait pas.
+public struct License: Codable, Hashable, Sendable {
+    public var code: String
+    public var label: String
+    public var free: Bool?
+    public var url: String
+
+    public static let none = License(code: "", label: "", free: nil, url: "")
+}
+
+/// Un résultat, quelle que soit la source. Mêmes champs que le dict Python,
+/// pour pouvoir relire panier, favoris et journal écrits par la version Flask.
+public struct Item: Codable, Hashable, Identifiable, Sendable {
+    public var title: String
+    public var creator: String
+    public var year: String
+    public var type: String
+    public var description: String
+    public var url: String
+    public var thumbnail: String
+    public var source: String
+    public var identifier: String
+    public var keywords: [String]?
+    public var license: License?
+    /// mp3 écoutable sans second appel (Freesound).
+    public var preview: String?
+
+    /// La même clé que le panier et le journal côté Python : `source:identifiant`.
+    public var key: String {
+        let ident = !identifier.isEmpty ? identifier : (!url.isEmpty ? url : title)
+        return "\(source):\(ident)"
+    }
+    public var id: String { key }
+
+    public init(title: String, creator: String, year: String, type: String, description: String,
+                url: String, thumbnail: String, source: String, identifier: String,
+                keywords: [String]? = nil, license: License? = nil, preview: String? = nil) {
+        self.title = title; self.creator = creator; self.year = year; self.type = type
+        self.description = description; self.url = url; self.thumbnail = thumbnail
+        self.source = source; self.identifier = identifier; self.keywords = keywords
+        self.license = license; self.preview = preview
+    }
+
+    // Le Python écrivait `year` tantôt en texte, tantôt en nombre (archive.org) :
+    // on accepte les deux à la lecture.
+    enum CodingKeys: String, CodingKey {
+        case title, creator, year, type, description, url, thumbnail, source, identifier, keywords, license, preview
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        func s(_ k: CodingKeys) -> String {
+            if let v = try? c.decode(String.self, forKey: k) { return v }
+            if let v = try? c.decode(Int.self, forKey: k) { return String(v) }
+            if let v = try? c.decode(Double.self, forKey: k) { return String(Int(v)) }
+            return ""
+        }
+        title = s(.title); creator = s(.creator); year = s(.year); type = s(.type)
+        description = s(.description); url = s(.url); thumbnail = s(.thumbnail)
+        source = s(.source); identifier = s(.identifier)
+        keywords = try? c.decodeIfPresent([String].self, forKey: .keywords)
+        license = try? c.decodeIfPresent(License.self, forKey: .license)
+        preview = try? c.decodeIfPresent(String.self, forKey: .preview)
+    }
+}
+
+public enum SearchType: String, CaseIterable, Sendable {
+    case all = "", film, audio, pdf
+    public var label: String {
+        switch self {
+        case .all: "Tous types"
+        case .film: "Films (1920-1980)"
+        case .audio: "Audio"
+        case .pdf: "PDFs"
+        }
+    }
+}
+
+public enum SortOption: String, CaseIterable, Sendable {
+    case relevance = "", dateDesc = "date_desc", downloadsDesc = "downloads_desc"
+    public var label: String {
+        switch self {
+        case .relevance: "Pertinence"
+        case .dateDesc: "Plus récent"
+        case .downloadsDesc: "Plus téléchargé"
+        }
+    }
+    var archiveParam: String? {
+        switch self {
+        case .relevance: nil
+        case .dateDesc: "date desc"
+        case .downloadsDesc: "downloads desc"
+        }
+    }
+}
+
+public enum Collection: String, CaseIterable, Sendable {
+    case all = "", prelinger, opensourceMovies = "opensource_movies", classicTV = "classic_tv", oldtimeradio
+    public var label: String {
+        switch self {
+        case .all: "Toutes collections"
+        case .prelinger: "Prelinger (films éphémères)"
+        case .opensourceMovies: "Films libres"
+        case .classicTV: "TV classique"
+        case .oldtimeradio: "Radio vintage"
+        }
+    }
+}
+
+public struct SearchQuery: Hashable, Sendable {
+    public var source: String
+    public var text: String
+    public var type: SearchType
+    public var sort: SortOption
+    public var collection: Collection
+    public var page: Int
+
+    public init(source: String, text: String, type: SearchType = .all, sort: SortOption = .relevance,
+                collection: Collection = .all, page: Int = 1) {
+        self.source = source; self.text = text; self.type = type
+        self.sort = sort; self.collection = collection; self.page = max(1, page)
+    }
+}
+
+public struct Related: Hashable, Sendable {
+    public var keywords: [String] = []
+    public var creators: [String] = []
+    public var years: [String] = []
+    public var isEmpty: Bool { keywords.isEmpty && creators.isEmpty && years.isEmpty }
+    public init(keywords: [String] = [], creators: [String] = [], years: [String] = []) {
+        self.keywords = keywords; self.creators = creators; self.years = years
+    }
+}
+
+public struct SearchPage: Sendable {
+    public var results: [Item]
+    public var total: Int?
+    public var hasMore: Bool
+    public var related: Related
+}
+
+/// Erreur dite en clair : « HTTPSConnectionPool… Read timed out » n'apprenait
+/// rien à l'usager, NSURLErrorDomain -1001 non plus.
+public struct SourceError: LocalizedError, Sendable {
+    public let message: String
+    public init(_ message: String) { self.message = message }
+    public var errorDescription: String? { message }
+}

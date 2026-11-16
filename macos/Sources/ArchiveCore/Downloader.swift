@@ -60,28 +60,60 @@ public enum Downloader {
 
     // ── Ce qui est téléchargeable ────────────────────────────────────────
 
-    /// (url, raison du refus). Seules archive.org et Freesound donnent un VRAI
-    /// fichier ; Gutenberg, Wikimedia et LibriVox ne renvoient qu'une page.
-    public static func resolve(_ item: Item) async -> (URL?, String?) {
+    /// Ce qu'on va chercher pour un item.
+    public struct Resolved: Sendable {
+        public var request: URLRequest?
+        public var ext: String
+        /// Refus (pas de fichier), ou remarque (aperçu mp3 au lieu de l'original).
+        public var note: String?
+        public var isPreview = false
+        public init(request: URLRequest?, ext: String, note: String? = nil, isPreview: Bool = false) {
+            self.request = request; self.ext = ext; self.note = note; self.isPreview = isPreview
+        }
+    }
+
+    /// Seules archive.org et Freesound donnent un VRAI fichier ; Gutenberg,
+    /// Wikimedia et LibriVox ne renvoient qu'une page.
+    public static func resolve(_ item: Item) async -> Resolved {
         switch item.source {
         case "archive.org":
             do {
                 let r = try await Sources.resolveArchiveFile(item.identifier)
-                return r.url != nil ? (r.url, nil) : (nil, "aucun fichier média trouvé")
+                guard let u = r.url else { return Resolved(request: nil, ext: "", note: "aucun fichier média trouvé") }
+                return Resolved(request: URLRequest(url: u), ext: ext(of: u))
             } catch {
-                return (nil, "résolution impossible (\(error.localizedDescription))")
+                return Resolved(request: nil, ext: "", note: "résolution impossible (\(error.localizedDescription))")
             }
         case "freesound":
-            // L'API ne donne que la prévisualisation : l'original exige OAuth2.
-            if let p = item.preview, let u = URL(string: p), !p.isEmpty { return (u, nil) }
-            return (nil, "pas de prévisualisation")
+            // L'original exige OAuth2 (compte connecté dans les Réglages) ;
+            // sans lui, l'aperçu mp3, et le bilan le dit.
+            var why = "compte Freesound non connecté"
+            do {
+                if let token = try await FreesoundAuth.validAccessToken() {
+                    return Resolved(request: FreesoundAuth.originalRequest(soundID: item.identifier, token: token),
+                                    ext: "." + (item.format ?? "wav"))
+                }
+            } catch {
+                why = error.localizedDescription
+            }
+            if let p = item.preview, let u = URL(string: p), !p.isEmpty {
+                return Resolved(request: URLRequest(url: u), ext: ".mp3", note: "aperçu mp3 — \(why)", isPreview: true)
+            }
+            return Resolved(request: nil, ext: "", note: "pas de prévisualisation")
         default:
-            return (nil, "cette source ne renvoie qu'une page web, pas un fichier")
+            return Resolved(request: nil, ext: "", note: "cette source ne renvoie qu'une page web, pas un fichier")
         }
     }
 
     public static func isDownloadable(_ item: Item) -> Bool {
-        item.source == "archive.org" || (item.source == "freesound" && !(item.preview ?? "").isEmpty)
+        item.source == "archive.org" || (item.source == "freesound" && (!(item.preview ?? "").isEmpty || FreesoundAuth.isConnected))
+    }
+
+    /// Un fichier déjà pris n'est réutilisé que s'il vaut ce qu'on irait
+    /// chercher : un aperçu mp3 pris avant la connexion ne remplace pas l'original.
+    static func reusable(_ item: Item, _ file: URL) -> Bool {
+        guard item.source == "freesound", FreesoundAuth.isConnected, let f = item.format, f != "mp3" else { return true }
+        return file.pathExtension.lowercased() != "mp3"
     }
 
     // ── Lien à partager : .torrent d'abord (fair-use), sinon fichier, sinon page
@@ -115,6 +147,8 @@ public enum Downloader {
         public var reused: [String] = []
         public var creditsFailed = false
         public var cancelled = false
+        /// Freesound pris en aperçu mp3 faute d'original, avec la raison.
+        public var previews: [String] = []
         public init() {}
     }
 
@@ -141,7 +175,7 @@ public enum Downloader {
             // Déjà sur le disque : rien au réseau. C'est la DESTINATION qui
             // décide — pas de refus du doublon, le même son sert à deux projets.
             let (prior, live) = Journal.live(item)
-            if let prior {
+            if let prior, live.contains(where: { reusable(item, $0) }) {
                 do {
                     let src: URL, note: String
                     if let here = live.first(where: { $0.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root) }) {
@@ -165,14 +199,14 @@ public enum Downloader {
                 }
             }
 
-            let (url, refusal) = await resolve(item)
-            guard let url else {
-                p.errors.append("\(item.title) — \(refusal ?? "?")")
+            let res = await resolve(item)
+            guard let request = res.request else {
+                p.errors.append("\(item.title) — \(res.note ?? "?")")
                 p.done += 1; report(p)
                 continue
             }
             do {
-                let dest = try destPath(folder, item, ext: ext(of: url))
+                let dest = try destPath(folder, item, ext: res.ext)
                 var last: Error?
                 for attempt in 1...retries {
                     p.attempt = attempt; p.bytes = 0; p.bytesTotal = 0; report(p)
@@ -180,7 +214,7 @@ public enum Downloader {
                         // Le rappel vient du fil d'URLSession : il travaille
                         // sur une copie, jamais sur `p` lui-même.
                         let snapshot = p
-                        try await fetch(url, to: dest) { got, total in
+                        try await fetch(request, to: dest) { got, total in
                             var q = snapshot
                             q.bytes = got; q.bytesTotal = total
                             report(q)
@@ -201,6 +235,7 @@ public enum Downloader {
                 Journal.note(item, dest: dest, size: fileSize(dest))
                 credits.append((dest.lastPathComponent, Credits.line(item, file: dest.lastPathComponent)))
                 p.written.append(rel(dest))
+                if res.isPreview, let n = res.note { p.previews.append("\(item.title) — \(n)") }
             } catch {
                 if Task.isCancelled {
                     p.cancelled = true
@@ -223,7 +258,7 @@ public enum Downloader {
     }
 
     /// Écriture en `.part` renommé à la fin : rien d'incomplet ne porte le nom final.
-    static func fetch(_ url: URL, to dest: URL, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+    static func fetch(_ request: URLRequest, to dest: URL, progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         // La progression se lit sur la tâche, à intervalle : l'observation KVO de
         // `task.progress` ne remonte rien pour une tâche de téléchargement async
         // (barre figée à 0 Ko sur 127 Mo, constaté le 2026-11-15).
@@ -237,7 +272,7 @@ public enum Downloader {
             }
         }
         defer { poller.cancel() }
-        let (tmp, resp) = try await downloadSession.download(from: url, delegate: delegate)
+        let (tmp, resp) = try await downloadSession.download(for: request, delegate: delegate)
         defer { try? FileManager.default.removeItem(at: tmp) }
         if let h = resp as? HTTPURLResponse {
             switch h.statusCode {

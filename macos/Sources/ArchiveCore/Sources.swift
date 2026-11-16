@@ -9,6 +9,7 @@ public struct SourceInfo: Hashable, Sendable {
 
 public enum Sources {
     public static let all: [SourceInfo] = [
+        .init(id: allID, label: "Toutes les sources", handoff: false),
         .init(id: "archive.org", label: "Archive.org", handoff: false),
         .init(id: "gutenberg", label: "Gutenberg (livres)", handoff: false),
         .init(id: "wikimedia", label: "Wikimedia Commons", handoff: false),
@@ -16,6 +17,71 @@ public enum Sources {
         .init(id: "freesound", label: "Freesound (sons)", handoff: false),
         .init(id: "loc.gov", label: "Library of Congress (audio) ↗", handoff: true),
     ]
+
+    // ── Toutes les sources d'un coup ─────────────────────────────────────
+
+    public static let allID = "all"
+    /// loc.gov n'est qu'un renvoi : il n'entre pas dans le lot.
+    public static let allSources = ["archive.org", "freesound", "wikimedia", "librivox", "gutenberg"]
+
+    /// Ce que chaque source a rendu, pour le dire à côté des résultats.
+    public struct Outcome: Sendable, Hashable {
+        public let source: String
+        public let count: Int
+        public let total: Int?
+        public let error: String?
+        public let seconds: Double
+    }
+
+    /// Intercale les listes source par source (1er d'archive.org, 1er de
+    /// Freesound…) : concaténées, la première source à répondre occuperait
+    /// tout l'écran. Chaque liste garde l'ordre de pertinence de sa source.
+    public static func interleave(_ lists: [[Item]]) -> [Item] {
+        var out: [Item] = [], seen = Set<String>()
+        let n = lists.map(\.count).max() ?? 0
+        for i in 0..<n {
+            for l in lists where i < l.count && seen.insert(l[i].key).inserted { out.append(l[i]) }
+        }
+        return out
+    }
+
+    /// Toutes les sources en parallèle. `progress` reçoit chaque source dès
+    /// qu'elle répond : Gutenberg met 15 à 30 s, il ne doit pas faire attendre
+    /// les quatre autres. Une source en panne est notée, pas fatale.
+    public static func searchAll(_ text: String, page: Int = 1,
+                                 sources: [String] = allSources, useCache: Bool = true,
+                                 progress: (@Sendable (Outcome, [Item]) async -> Void)? = nil)
+        async -> (page: SearchPage, outcomes: [Outcome]) {
+        var lists: [String: [Item]] = [:]
+        var outcomes: [Outcome] = []
+        var anyMore = false
+        await withTaskGroup(of: (Outcome, [Item], Bool).self) { group in
+            for src in sources {
+                group.addTask {
+                    let t0 = Date()
+                    do {
+                        let p = try await search(SearchQuery(source: src, text: text, page: page), useCache: useCache)
+                        return (Outcome(source: src, count: p.results.count, total: p.total, error: nil,
+                                        seconds: Date().timeIntervalSince(t0)), p.results, p.hasMore)
+                    } catch {
+                        return (Outcome(source: src, count: 0, total: nil, error: error.localizedDescription,
+                                        seconds: Date().timeIntervalSince(t0)), [], false)
+                    }
+                }
+            }
+            for await (o, items, more) in group {
+                lists[o.source] = items
+                outcomes.append(o)
+                anyMore = anyMore || more
+                await progress?(o, items)
+            }
+        }
+        let merged = interleave(sources.compactMap { lists[$0] })
+        let totals = outcomes.compactMap(\.total)
+        let page = SearchPage(results: merged, total: totals.isEmpty ? nil : totals.reduce(0, +),
+                              hasMore: anyMore, related: relatedTerms(merged, query: text))
+        return (page, sources.compactMap { s in outcomes.first { $0.source == s } })
+    }
 
     /// loc.gov ne s'interroge pas depuis un programme : tout leur site répond
     /// 403 derrière un défi Cloudflare, y compris leur documentation d'API. Un
@@ -39,6 +105,9 @@ public enum Sources {
         case "wikimedia": (results, total) = try await wikimedia(text, q.page)
         case "librivox": (results, total) = try await librivox(text, q.page)
         case "freesound": (results, total) = try await freesound(text, q.page)
+        case allID:
+            // Pour la veille et l'historique : la même recherche, fusionnée.
+            return await searchAll(text, page: q.page, useCache: useCache).page
         case "loc.gov":
             throw SourceError("loc.gov ne peut pas être interrogé par l'app (défi Cloudflare) — la recherche s'ouvre sur leur site.")
         default: throw SourceError("Source inconnue : \(q.source)")
@@ -188,7 +257,7 @@ public enum Sources {
         }
         let (data, status) = try await HTTP.json(HTTP.url("https://freesound.org/apiv2/search/text/", [
             ("query", query), ("page", "\(page)"), ("page_size", "\(Config.rowsPerPage)"),
-            ("fields", "id,name,username,description,previews,images,duration,license,url,created,tags"),
+            ("fields", "id,name,username,description,previews,images,duration,license,url,created,tags,type,channels,samplerate"),
             ("token", token),
         ]), source: "freesound")
         if status == 401 || status == 403 { throw SourceError("Freesound refuse la clé (\(status)) — la vérifier dans Réglages.") }
@@ -204,7 +273,8 @@ public enum Sources {
                         source: "freesound", identifier: str(s["id"]),
                         keywords: Array(strList(s["tags"]).prefix(12)),
                         license: normalizeLicense(str(s["license"])),
-                        preview: or(str(previews["preview-hq-mp3"]), str(previews["preview-lq-mp3"])))
+                        preview: or(str(previews["preview-hq-mp3"]), str(previews["preview-lq-mp3"])),
+                        format: str(s["type"]).isEmpty ? nil : str(s["type"]).lowercased())
         }
         return (items, (data["count"] as? NSNumber)?.intValue)
     }

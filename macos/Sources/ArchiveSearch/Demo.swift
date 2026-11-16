@@ -1,3 +1,4 @@
+import AppKit
 import ArchiveCore
 import Foundation
 
@@ -13,13 +14,19 @@ import Foundation
 ///   ARCHIVE_DEMO_HUNT_SHEET="thème"        ouvre la feuille avec le champ proposé, sans lancer
 ///   ARCHIVE_DEMO_REPORT="12"               ouvre « Voir le rendement » 12 s après la fin de la fouille
 ///   ARCHIVE_DEMO_DONE="/chemin"            fichier témoin écrit quand la fouille est classée
+///   ARCHIVE_DEMO_SETTINGS="1"              ouvre les Réglages
 @MainActor
 enum Demo {
     static let env = ProcessInfo.processInfo.environment
     static var active: Bool { env.keys.contains { $0.hasPrefix("ARCHIVE_DEMO_") } }
 
-    static func run(model: SearchModel, hunt: HuntModel, library: LibraryModel, setPane: @escaping (Pane) -> Void) async {
+    static func run(model: SearchModel, hunt: HuntModel, library: LibraryModel, openSettings: @escaping () -> Void,
+                    setPane: @escaping (Pane) -> Void) async {
         guard active else { return }
+        if env["ARCHIVE_DEMO_SETTINGS"] != nil {
+            try? await Task.sleep(for: .milliseconds(500))
+            openSettings()
+        }
         if let s = env["ARCHIVE_DEMO_SEARCH"] {
             let parts = s.split(separator: "|", maxSplits: 1).map(String.init)
             if parts.count == 2 { model.source = parts[0]; model.text = parts[1] } else { model.text = s }

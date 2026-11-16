@@ -43,12 +43,34 @@ lisible par toi seul. `$FREESOUND_TOKEN` prime si elle est posée.
 Sans clé, la source répond par un message qui le dit, plutôt que par zéro
 résultat, qu'on confondrait avec « rien trouvé ».
 
-⚠️ L'API ne livre que la **prévisualisation mp3**, pas le fichier d'origine :
-celui-ci exige OAuth2, pas le simple jeton.
+### Les fichiers d'origine demandent de connecter un compte
+
+La clé seule ne livre que la **prévisualisation mp3**. Le fichier d'origine
+(WAV, FLAC, AIFF…) exige OAuth2, au nom d'un compte. Dans les Réglages,
+section « Fichiers d'origine » :
+
+1. renseigner l'identifiant client de l'application (même page que la clé) ;
+2. **Autoriser chez Freesound ↗** : la connexion se fait dans le navigateur,
+   chez Freesound, aucun mot de passe ne passe par l'app ;
+3. Freesound renvoie vers l'adresse de retour déclarée pour l'application, avec
+   `?code=…` : coller ce code, ou l'adresse entière, puis **Valider**. Le code ne
+   vaut que 10 minutes.
+
+Le jeton se renouvelle seul. Sans compte connecté, les sons partent en aperçu
+mp3, et le bilan du lot le dit, son par son. Un aperçu pris avant la connexion
+ne remplace pas l'original : le lot suivant va chercher le WAV.
 
 ## Chercher
 
 ![Sons Freesound pour « foghorn », licences CC BY, lecteur audio à droite](docs/captures/sons.png)
+
+**Toutes les sources** (le choix par défaut) interroge archive.org,
+Freesound, Wikimedia, LibriVox et Gutenberg en parallèle. Les résultats
+s'affichent dès la première réponse, intercalés source par source pour
+qu'aucune n'occupe tout l'écran. Une pastille par source dit ce qu'elle a
+rendu ; un clic n'affiche que celle-là. Gutenberg, qui met 15 à 30 s, complète
+la liste à son arrivée sans faire attendre les autres, et une source en panne
+est signalée sans rien bloquer.
 
 Un résultat sélectionné se lit dans le panneau de droite : film ou audio
 d'archive.org, aperçu Freesound, PDF, image Wikimedia. Pour archive.org, le
@@ -83,9 +105,16 @@ archive.org : sur une recherche `prelinger`, 1 réutilisable, 3 restreints et
 **16 inconnus** sur 20. Un fonds en accès libre n'est pas un fonds libre de
 droits.
 
-## Panier, téléchargement, crédits
+## Projets, téléchargement, crédits
 
 ![Panier de quatre sons Freesound, boutons Télécharger et Copier les liens](docs/captures/panier.png)
+
+**Un panier par projet** (« Robōtariis ép. 12 », « Séance AZA 14 ») : le
+sélecteur en tête du panier change de projet, le menu à côté en crée, en
+renomme, en supprime. ➕ ajoute au projet actif. Chaque projet retient son
+dossier de téléchargement : le dialogue s'y rouvre, et sa fiche de crédits s'y
+complète. **Copier les crédits en Markdown** donne la liste titre, auteur,
+source et licence, prête pour des notes d'épisode ou le vault.
 
 **⬇ Télécharger…** ouvre le dialogue de dossier de macOS. Choisir la racine
 (`~/archive-search-downloads`) range le lot dans un sous-dossier daté
@@ -104,7 +133,9 @@ le bilan du lot dit lesquels et pourquoi.
 ### Journal des téléchargements
 
 Chaque fichier écrit est noté, avec **tous** les endroits où il a été rangé. Une
-carte dont le fichier est encore sur le disque porte **déjà pris**.
+carte dont le fichier est encore sur le disque porte **déjà pris**, et se
+**glisse** directement vers Logic, Ableton ou le Finder : c'est le fichier
+lui-même qui est déposé. Les autres cartes se glissent comme lien vers leur page.
 
 | Situation | Ce qui se passe |
 |---|---|
@@ -238,15 +269,17 @@ d'archive.org ne comble pas le manque : c'est du texte numérisé, pas leur audi
 
 ## Données
 
-Tout vit dans `~/Library/Application Support/Archive Search/` : `cart.json`,
-`favorites.json`, `history.json`, `downloads.json`, aux formats de la version
-web. **Fichier › Importer les données de la version web…** reprend ceux de
+Tout vit dans `~/Library/Application Support/Archive Search/` :
+`projects.json` (les paniers par projet ; l'ancien `cart.json` y devient le
+projet « Panier » au premier lancement), `favorites.json`, `history.json`,
+`downloads.json`, aux formats de la version web, plus les jetons Freesound
+(fichiers lisibles par toi seul). **Fichier › Importer les données de la version web…** reprend ceux de
 `~/.local/share/archive-search` par fusion, sans rien écraser.
 
 ## Développement
 
 ```bash
-swift run --package-path macos archive-check            # 62 vérifications, sans réseau
+swift run --package-path macos archive-check            # 78 vérifications, sans réseau
 swift run --package-path macos archive-check --live     # + une requête par source, un vrai téléchargement
 swift run --package-path macos archive-check --hunt "brume et cornes de brume sur une côte de nuit"
 ```

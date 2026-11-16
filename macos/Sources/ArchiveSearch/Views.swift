@@ -22,6 +22,7 @@ struct ContentView: View {
     @Local private var showInspector = true
     @Local private var pane: Pane = .results
     @FocusState private var searchFocused: Bool
+    @Environment(\.openSettings) private var openSettings
 
     /// L'item sélectionné, où qu'il soit affiché.
     private var selected: Item? {
@@ -37,7 +38,7 @@ struct ContentView: View {
             Divider()
             switch pane {
             case .results:
-                if !model.related.isEmpty || !model.results.isEmpty { infoBar; Divider() }
+                if !model.related.isEmpty || !model.results.isEmpty || !model.pending.isEmpty { infoBar; Divider() }
                 resultsList
             case .cart:
                 CartBar(); Divider()
@@ -73,7 +74,9 @@ struct ContentView: View {
             ToolbarItem(placement: .principal) {
                 Picker("Vue", selection: $pane) {
                     Text("Résultats").tag(Pane.results)
-                    Text("Panier \(library.cart.count)").tag(Pane.cart)
+                    // Nom court et compteur entre parenthèses : « Robōtariis ép. 12 2 »
+                    // se lisait comme un seul nom.
+                    Text("\(library.activeProject.count > 16 ? String(library.activeProject.prefix(15)) + "…" : library.activeProject) (\(library.cart.count))").tag(Pane.cart)
                     Text("Favoris \(library.favorites.count)").tag(Pane.favorites)
                     Text("Journal").tag(Pane.journal)
                     // Du texte, pas un Label : dans un segment de barre d'outils,
@@ -97,7 +100,7 @@ struct ContentView: View {
         .navigationTitle("Archive Search")
         .navigationSubtitle(model.statusLine)
         .onAppear { searchFocused = true }
-        .task { await Demo.run(model: model, hunt: hunt, library: library) { pane = $0 } }
+        .task { await Demo.run(model: model, hunt: hunt, library: library, openSettings: { openSettings() }) { pane = $0 } }
         .onChange(of: model.shownLabel) { pane = .results }
         .onChange(of: watch.pendingReplay) {
             if let q = watch.pendingReplay { model.replay(q); pane = .results; watch.pendingReplay = nil }
@@ -153,6 +156,7 @@ struct ContentView: View {
 
     private var infoBar: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !model.outcomes.isEmpty || !model.pending.isEmpty { SourcesRow(model: model) }
             RelatedRow(title: "Affiner", terms: model.related.keywords, action: model.searchRelated)
             RelatedRow(title: "Auteur", terms: model.related.creators, action: model.searchRelated)
             RelatedRow(title: "Année", terms: model.related.years) { y in
@@ -246,6 +250,53 @@ struct ContentView: View {
     }
 }
 
+/// Ce que chaque source a rendu dans une recherche « toutes les sources ».
+/// Un clic n'affiche que cette source ; un second clic les remet toutes.
+struct SourcesRow: View {
+    @ObservedObject var model: SearchModel
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("Sources").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(width: 52, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Sources.allSources, id: \.self) { src in chip(src) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func chip(_ src: String) -> some View {
+        if let o = model.outcomes.first(where: { $0.source == src }) {
+            let on = model.sourceFilter == src
+            Button {
+                model.sourceFilter = on ? nil : src
+            } label: {
+                HStack(spacing: 4) {
+                    if o.error != nil { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    Text(src)
+                    if o.error == nil { Text("\(o.count)").monospacedDigit().foregroundStyle(.secondary) }
+                }
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .tint(on ? .amber : nil)
+            .disabled(o.error != nil || o.count == 0)
+            .help(o.error ?? String(format: "%d résultat%@ en %.1f s%@ — un clic n'affiche que cette source",
+                                    o.count, o.count > 1 ? "s" : "", o.seconds,
+                                    o.total.map { " (\($0.formatted()) en tout)" } ?? ""))
+        } else if model.pending.contains(src) {
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text(src).foregroundStyle(.secondary)
+            }
+            .font(.callout)
+            .padding(.horizontal, 6)
+            .help(src == "gutenberg" ? "Gutenberg met 15 à 30 s : ses résultats s'ajouteront à l'arrivée" : "en attente")
+        }
+    }
+}
+
 struct RelatedRow: View {
     let title: String
     let terms: [String]
@@ -306,6 +357,9 @@ struct ResultRow: View {
                     }
                     LicenseBadge(license: item.license, long: false)
                     if taken {
+                        Label("glisser vers le DAW", systemImage: "hand.draw").labelStyle(.iconOnly)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .help("Fichier sur le disque : le glisser dépose le fichier lui-même (Logic, Ableton, Finder)")
                         Text("déjà pris").font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Color.amber.opacity(0.18), in: Capsule())
@@ -322,7 +376,13 @@ struct ResultRow: View {
             // Liseré ambre, comme la version web.
             if isNew { Rectangle().fill(Color.amber).frame(width: 3).offset(x: -8) }
         }
+        // Glisser vers Logic, Ableton ou le Finder : le FICHIER s'il est déjà
+        // sur le disque (on le dépose dans un projet), sinon le lien de la page.
+        .onDrag { Self.dragProvider(item) }
         .contextMenu {
+            if let f = Journal.live(item).1.first {
+                Button("Afficher le fichier dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([f]) }
+            }
             if let u = URL(string: item.url), !item.url.isEmpty {
                 Link("Ouvrir la page", destination: u)
                 Button("Copier le lien") {
@@ -331,6 +391,15 @@ struct ResultRow: View {
                 }
             }
         }
+    }
+
+    static func dragProvider(_ item: Item) -> NSItemProvider {
+        if let f = Journal.live(item).1.first, let p = NSItemProvider(contentsOf: f) {
+            p.suggestedName = f.lastPathComponent
+            return p
+        }
+        if let u = URL(string: item.url), !item.url.isEmpty { return NSItemProvider(object: u as NSURL) }
+        return NSItemProvider(object: item.title as NSString)
     }
 
     @ViewBuilder private var thumb: some View {

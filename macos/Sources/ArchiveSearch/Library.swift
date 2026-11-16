@@ -11,6 +11,28 @@ final class LibraryModel: ObservableObject {
     /// Clés dont un fichier est encore sur le disque.
     @Published private(set) var taken: Set<String> = Journal.takenKeys()
     @Published var saveError: String?
+    /// Les projets, et celui dont le panier est affiché.
+    @Published private(set) var projects: [Projects.Project] = Projects.load().projects
+    @Published private(set) var activeProject: String = Projects.load().active
+
+    var active: Projects.Project? { projects.first { $0.name == activeProject } }
+
+    private func syncProjects() {
+        let st = Projects.load()
+        projects = st.projects; activeProject = st.active
+        cart = st.activeProject.items
+    }
+
+    private func guarded(_ f: () throws -> Void) {
+        do { try f() } catch { saveError = "Projet non enregistré : \(error.localizedDescription)" }
+        syncProjects()
+    }
+
+    func selectProject(_ name: String) { guarded { try Projects.select(name) } }
+    func createProject(_ name: String) { guarded { try Projects.create(name) } }
+    func renameProject(_ old: String, to new: String) { guarded { try Projects.rename(old, to: new) } }
+    func deleteProject(_ name: String) { guarded { try Projects.delete(name) } }
+    func setFolder(_ folder: URL) { guarded { try Projects.setFolder(folder, for: activeProject) } }
 
     func items(_ l: Store.List) -> [Item] { l == .cart ? cart : favorites }
 
@@ -34,10 +56,11 @@ final class LibraryModel: ObservableObject {
     private func set(_ l: Store.List, _ list: [Item]) {
         if l == .cart { cart = list } else { favorites = list }
         do { try Store.writeList(l, list) } catch { saveError = "Liste non enregistrée : \(error.localizedDescription)" }
+        if l == .cart { syncProjects() }
     }
 
     func reload() {
-        cart = Store.readList(.cart)
+        syncProjects()
         favorites = Store.readList(.favorites)
         refreshTaken()
     }
@@ -66,10 +89,14 @@ final class DownloadModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = root
+        // Chaque projet se rouvre sur son dossier : l'épisode 12 retombe dans
+        // le dossier de l'épisode 12, sa fiche de crédits s'y complète.
+        let remembered = library.active?.folder.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let r = remembered, FileManager.default.fileExists(atPath: r.path) { panel.directoryURL = r } else { panel.directoryURL = root }
         panel.prompt = "Télécharger ici"
-        panel.message = "Choisir le dossier du lot. Depuis « \(root.lastPathComponent) » sans sous-dossier, le lot va dans un sous-dossier daté."
+        panel.message = "Dossier du projet « \(library.activeProject) ». Depuis « \(root.lastPathComponent) » sans sous-dossier, le lot va dans un sous-dossier daté."
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        if chosen.standardizedFileURL.path != root.standardizedFileURL.path { library.setFolder(chosen) }
         start(items, into: Downloader.batchFolder(chosen: chosen), library: library)
     }
 
@@ -115,7 +142,7 @@ struct ItemButtons: View {
                 Image(systemName: inCart ? "basket.fill" : "plus.circle")
                     .foregroundStyle(inCart ? Color.amber : .secondary)
             }
-            .help(inCart ? "Retirer du panier" : "Ajouter au panier")
+            .help(inCart ? "Retirer de « \(library.activeProject) »" : "Ajouter à « \(library.activeProject) »")
             let fav = library.contains(.favorites, item)
             Button { library.toggle(.favorites, item) } label: {
                 Image(systemName: fav ? "star.fill" : "star").foregroundStyle(fav ? Color.amber : .secondary)
@@ -134,12 +161,45 @@ struct CartBar: View {
     @Local private var copying = false
     @Local private var copied: String?
     @Local private var confirmClear = false
+    @Local private var naming: NameAsk?
+    @Local private var nameField = ""
+    @Local private var confirmDelete = false
+
+    enum NameAsk: Identifiable { case create, rename; var id: Int { self == .create ? 0 : 1 } }
 
     var body: some View {
         let items = library.cart
         let downloadable = items.filter(Downloader.isDownloadable).count
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
+                Picker("Projet", selection: Binding(get: { library.activeProject }, set: { library.selectProject($0) })) {
+                    ForEach(library.projects) { p in Text("\(p.name) (\(p.items.count))").tag(p.name) }
+                }
+                .labelsHidden().fixedSize()
+                .help("Chaque projet a son panier, sa fiche de crédits et son dossier de téléchargement")
+                Menu {
+                    Button("Nouveau projet…") { nameField = ""; naming = .create }
+                    Button("Renommer « \(library.activeProject) »…") { nameField = library.activeProject; naming = .rename }
+                    Divider()
+                    Button("Copier les crédits en Markdown") {
+                        if let p = library.active {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(Projects.creditsMarkdown(p), forType: .string)
+                            copied = "Crédits de « \(p.name) » copiés en Markdown (\(p.items.count) item\(p.items.count > 1 ? "s" : ""))."
+                        }
+                    }
+                    .disabled(items.isEmpty)
+                    if let f = library.active?.folder {
+                        Button("Afficher le dossier du projet") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f)])
+                        }
+                    }
+                    Divider()
+                    Button("Supprimer « \(library.activeProject) »…", role: .destructive) { confirmDelete = true }
+                        .disabled(library.projects.count < 2)
+                } label: { Image(systemName: "folder.badge.gearshape") }
+                .menuStyle(.borderlessButton).fixedSize()
+                Divider().frame(height: 18)
                 Button {
                     downloads.chooseAndStart(items, library: library)
                 } label: { Label("Télécharger…", systemImage: "arrow.down.circle") }
@@ -161,6 +221,25 @@ struct CartBar: View {
             if let copied { Text(copied).font(.caption).foregroundStyle(.secondary) }
         }
         .padding(12)
+        .alert(naming == .rename ? "Renommer le projet" : "Nouveau projet",
+               isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
+            TextField("Nom du projet", text: $nameField)
+            Button(naming == .rename ? "Renommer" : "Créer") {
+                if naming == .rename { library.renameProject(library.activeProject, to: nameField) }
+                else { library.createProject(nameField) }
+                naming = nil
+            }
+            Button("Annuler", role: .cancel) { naming = nil }
+        } message: {
+            Text(naming == .rename ? "Les items et le dossier restent attachés au projet." : "Le nouveau projet devient le panier actif.")
+        }
+        .confirmationDialog("Supprimer « \(library.activeProject) » ?", isPresented: $confirmDelete) {
+            Button("Supprimer le projet (\(items.count) item\(items.count > 1 ? "s" : ""))", role: .destructive) {
+                library.deleteProject(library.activeProject)
+            }
+        } message: {
+            Text("La liste disparaît ; les fichiers déjà téléchargés et leur fiche de crédits restent sur le disque.")
+        }
         .confirmationDialog("Vider le panier ?", isPresented: $confirmClear) {
             Button("Vider (\(items.count))", role: .destructive) { library.clear(.cart) }
         } message: {
@@ -230,6 +309,7 @@ struct DownloadReport: View {
                 VStack(alignment: .leading, spacing: 10) {
                     section("Écrits", p.written, "checkmark.circle", .green)
                     section("Repris", p.reused, "arrow.triangle.2.circlepath", .secondary)
+                    section("En aperçu mp3, pas l'original", p.previews, "waveform.badge.exclamationmark", .orange)
                     section("Écartés", p.errors, "xmark.circle", .red)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

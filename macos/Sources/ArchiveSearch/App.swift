@@ -104,12 +104,78 @@ struct SettingsView: View {
             } header: {
                 Text("Freesound")
             } footer: {
-                Text("Leur API n'a aucun quota anonyme. La clé est rangée dans Application Support (fichier lisible par toi seul), pas dans le dépôt. Elle ne donne que la prévisualisation mp3 : le fichier d'origine exige OAuth2.")
+                Text("Leur API n'a aucun quota anonyme. La clé est rangée dans Application Support (fichier lisible par toi seul), pas dans le dépôt. Elle ne donne que la prévisualisation mp3 : le fichier d'origine exige de connecter un compte, ci-dessous.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            FreesoundOAuthSection()
         }
         .formStyle(.grouped)
-        .frame(width: 480)
+        .frame(width: 540, height: 640)
         .padding(.vertical, 8)
+    }
+}
+
+/// Connexion du compte Freesound (OAuth2), pour les fichiers d'origine.
+/// La connexion se fait CHEZ Freesound, dans le navigateur : aucun mot de
+/// passe ne passe par l'app.
+struct FreesoundOAuthSection: View {
+    @Local private var clientID = FreesoundAuth.clientID()
+    @Local private var pasted = ""
+    @Local private var status: String?
+    @Local private var busy = false
+    @Local private var connected = FreesoundAuth.tokens()
+
+    var body: some View {
+        Section {
+            TextField("Identifiant client (Client id)", text: $clientID)
+                .onSubmit { try? FreesoundAuth.setClientID(clientID) }
+            if let t = connected {
+                HStack {
+                    Label("Compte connecté — fichiers d'origine", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+                    Spacer()
+                    Button("Déconnecter") { FreesoundAuth.signOut(); connected = nil; status = "Déconnecté : retour aux aperçus mp3." }
+                }
+                Text("Jeton renouvelé seul ; le courant vaut jusqu'au \(t.expires_at.formatted(date: .abbreviated, time: .shortened)).")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Button("1. Autoriser chez Freesound ↗") {
+                        try? FreesoundAuth.setClientID(clientID)
+                        if let u = FreesoundAuth.authorizeURL(state: UUID().uuidString) { NSWorkspace.shared.open(u) }
+                        else { status = "Renseigner d'abord l'identifiant client." }
+                    }
+                    .disabled(clientID.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                TextField("2. Coller le code, ou l'adresse de retour entière", text: $pasted)
+                HStack {
+                    Button("3. Valider") { validate() }
+                        .disabled(busy || FreesoundAuth.extractCode(pasted) == nil)
+                    if busy { ProgressView().controlSize(.small) }
+                }
+            }
+            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+        } header: {
+            Text("Fichiers d'origine (WAV, FLAC, AIFF…)")
+        } footer: {
+            Text("Après l'autorisation, Freesound renvoie vers l'adresse de retour déclarée pour l'application (sur freesound.org/apiv2/apply), avec « ?code=… » dans l'adresse : copier cette adresse ou le code. Il ne vaut que 10 minutes. Le secret client est la clé d'API ci-dessus.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func validate() {
+        guard let code = FreesoundAuth.extractCode(pasted) else { return }
+        busy = true; status = nil
+        try? FreesoundAuth.setClientID(clientID)
+        Task {
+            do {
+                try await FreesoundAuth.exchange(code: code)
+                connected = FreesoundAuth.tokens()
+                pasted = ""
+                status = "Connecté : les sons Freesound se téléchargent désormais en fichier d'origine."
+            } catch {
+                status = error.localizedDescription
+            }
+            busy = false
+        }
     }
 }

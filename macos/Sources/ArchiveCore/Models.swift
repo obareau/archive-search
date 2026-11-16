@@ -41,6 +41,8 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
     public var license: License?
     /// mp3 écoutable sans second appel (Freesound).
     public var preview: String?
+    /// Format du fichier d'origine (Freesound : wav, flac, aiff, mp3…).
+    public var format: String?
 
     /// La même clé que le panier et le journal côté Python : `source:identifiant`.
     public var key: String {
@@ -51,17 +53,17 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
 
     public init(title: String, creator: String, year: String, type: String, description: String,
                 url: String, thumbnail: String, source: String, identifier: String,
-                keywords: [String]? = nil, license: License? = nil, preview: String? = nil) {
+                keywords: [String]? = nil, license: License? = nil, preview: String? = nil, format: String? = nil) {
         self.title = title; self.creator = creator; self.year = year; self.type = type
         self.description = description; self.url = url; self.thumbnail = thumbnail
         self.source = source; self.identifier = identifier; self.keywords = keywords
-        self.license = license; self.preview = preview
+        self.license = license; self.preview = preview; self.format = format
     }
 
     // Le Python écrivait `year` tantôt en texte, tantôt en nombre (archive.org) :
     // on accepte les deux à la lecture.
     enum CodingKeys: String, CodingKey {
-        case title, creator, year, type, description, url, thumbnail, source, identifier, keywords, license, preview
+        case title, creator, year, type, description, url, thumbnail, source, identifier, keywords, license, preview, format
     }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -77,6 +79,7 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
         keywords = try? c.decodeIfPresent([String].self, forKey: .keywords)
         license = try? c.decodeIfPresent(License.self, forKey: .license)
         preview = try? c.decodeIfPresent(String.self, forKey: .preview)
+        format = try? c.decodeIfPresent(String.self, forKey: .format)
     }
 }
 

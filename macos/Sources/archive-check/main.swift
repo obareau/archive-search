@@ -273,6 +273,107 @@ do {  // un terme du fonds n'achète pas de centralité (cas mesuré : vent sur 
     check(p.results.first?.item.identifier == "h1", "le foghorn devant le vent de la Meuse : \(p.results.map { "\($0.item.identifier) \(String(format: "%.2f", $0.score))" })")
 }
 
+// ── Toutes les sources : intercalage ─────────────────────────────────────
+do {
+    func it(_ src: String, _ id: String) -> Item {
+        Item(title: id, creator: "", year: "", type: "", description: "", url: "", thumbnail: "", source: src, identifier: id)
+    }
+    let m = Sources.interleave([[it("a", "1"), it("a", "2"), it("a", "3")], [it("f", "x")], [it("w", "p"), it("a", "1")]])
+    check(m.map(\.identifier) == ["1", "x", "p", "2", "3"], "intercalé source par source, doublon écarté : \(m.map(\.identifier))")
+    check(Sources.all.first?.id == Sources.allID && !Sources.allSources.contains("loc.gov"), "« toutes » en tête, sans loc.gov")
+}
+
+// ── Paniers par projet ────────────────────────────────────────────────────
+do {
+    let legacyCart = [Item(title: "Ancien", creator: "", year: "", type: "", description: "", url: "u", thumbnail: "",
+                           source: "archive.org", identifier: "old1")]
+    try? Store.write(legacyCart, Store.List.cart.file)
+    try? fm.removeItem(at: Projects.file)
+    check(Projects.load().activeProject.name == Projects.defaultName && Store.readList(.cart).map(\.identifier) == ["old1"],
+          "l'ancien cart.json devient le projet « Panier »")
+    let ep = try! Projects.create("Épisode 12")
+    check(ep == "Épisode 12" && Store.readList(.cart).isEmpty, "nouveau projet actif et vide")
+    try? Store.writeList(.cart, [SON])
+    check(Projects.load().projects.first { $0.name == "Épisode 12" }?.items.first?.key == SON.key, "le panier écrit dans le projet actif")
+    check((try? Projects.create("Épisode 12")) == "Épisode 12 2", "nom de projet rendu unique")
+    try? Projects.select(Projects.defaultName)
+    check(Store.readList(.cart).map(\.identifier) == ["old1"], "changer de projet change le panier")
+    check((try? Projects.rename("Épisode 12 2", to: "Épisode 12")) == "Épisode 12 2", "renommer ne fusionne pas deux projets")
+    try? Projects.delete("Épisode 12 2"); try? Projects.delete("Épisode 12")
+    try? Projects.delete(Projects.defaultName)
+    check(Projects.load().projects.count == 1, "le dernier projet ne se supprime pas")
+    let md = Projects.creditsMarkdown(Projects.Project(name: "Ép. 12", items: [SON, ND, FILM]))
+    check(md.contains("## Crédits — Ép. 12") && md.contains("[CC BY]") && md.contains("⚠ restrictive") && md.contains("licence non déclarée"),
+          "crédits Markdown avec licences et alertes")
+}
+
+// ── Freesound : fichiers d'origine (OAuth2), sans réseau ──────────────────
+do {
+    check(FreesoundAuth.extractCode("https://www.example.org/retour?code=AbC123&state=x") == "AbC123", "code tiré de l'adresse de retour")
+    check(FreesoundAuth.extractCode("  AbC123 ") == "AbC123", "code seul")
+    check(FreesoundAuth.extractCode("https://www.example.org/retour?error=access_denied") == nil, "refus d'autorisation : pas de code")
+    var snd = SON; snd.preview = "https://cdn.freesound.org/previews/4242.mp3"; snd.format = "wav"
+    let sema = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var before = Downloader.Resolved(request: nil, ext: ""), after = before
+    let tok = #"{"access_token":"jeton-test","refresh_token":"r","expires_at":"2099-01-01T00:00:00Z"}"#
+    Task {
+        FreesoundAuth.signOut()
+        before = await Downloader.resolve(snd)
+        try? Data(tok.utf8).write(to: TMP.appendingPathComponent("freesound-oauth.json"))
+        after = await Downloader.resolve(snd)
+        FreesoundAuth.signOut()
+        sema.signal()
+    }
+    sema.wait()
+    check(before.isPreview && before.ext == ".mp3" && before.note?.contains("non connecté") == true, "sans compte : aperçu mp3, et le bilan le dit")
+    check(!after.isPreview && after.ext == ".wav" && after.request?.url?.absoluteString == "https://freesound.org/apiv2/sounds/4242/download/"
+          && after.request?.value(forHTTPHeaderField: "Authorization") == "Bearer jeton-test", "compte connecté : l'original, avec le jeton")
+    let decoded = try? JSONDecoder().decode(Item.self, from: JSONEncoder().encode(snd))
+    check(decoded?.format == "wav", "format d'origine conservé")
+}
+
+// ── Original Freesound réel : archive-check --original ───────────────────
+// Copie les identifiants et jetons du vrai dossier vers le dossier jetable :
+// rien n'est écrit dans les vraies données (journal, crédits, paniers).
+if CommandLine.arguments.contains("--original") {
+    let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Archive Search")
+    for f in ["freesound-token", "freesound-client-id", "freesound-oauth.json"] {
+        try? fm.copyItem(at: real.appendingPathComponent(f), to: TMP.appendingPathComponent(f))
+    }
+    let sema = DispatchSemaphore(value: 0)
+    Task {
+        print("  compte connecté : \(FreesoundAuth.isConnected)")
+        do {
+            let page = try await Sources.search(SearchQuery(source: "freesound", text: "foghorn"))
+            // Un original court : le plus petit à télécharger.
+            let short = page.results.filter { ($0.format ?? "mp3") != "mp3" }
+                .min { (Int($0.type.filter(\.isNumber)) ?? 999) < (Int($1.type.filter(\.isNumber)) ?? 999) }
+            guard let it = short else { check(false, "aucun original non-mp3 dans la recherche"); sema.signal(); return }
+            print("  son          « \(it.title) » (\(it.type), format \(it.format ?? "?"))")
+            let dir = TMP.appendingPathComponent("original")
+            let t0 = Date()
+            let p = await Downloader.run([it], into: dir) { _ in }
+            for e in p.errors { print("  ⚠ \(e)") }
+            for e in p.previews { print("  ⚠ aperçu : \(e)") }
+            guard let rel = p.written.first else { check(false, "original non téléchargé"); sema.signal(); return }
+            let f = dir.appendingPathComponent(rel)
+            let head = (try? FileHandle(forReadingFrom: f).read(upToCount: 4)).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            let size = (try? fm.attributesOfItem(atPath: f.path)[.size] as? Int) ?? 0
+            print(String(format: "  écrit        %@ — %@, en-tête « %@ », %.1f s", rel, ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file), head, Date().timeIntervalSince(t0)))
+            let magic = ["wav": "RIFF", "aiff": "FORM", "aif": "FORM", "flac": "fLaC", "ogg": "OggS"][it.format ?? ""] ?? head
+            check(p.previews.isEmpty && f.pathExtension == it.format && head == magic, "original au bon format, pas un aperçu")
+            check(fm.fileExists(atPath: dir.appendingPathComponent("CREDITS.txt").path) && Journal.live(it).1.count == 1, "crédits et journal de l'original")
+        } catch {
+            check(false, "recherche Freesound : \(error.localizedDescription)")
+        }
+        sema.signal()
+    }
+    sema.wait()
+    print(failures == 0 ? "✓ original Freesound vérifié" : "✗ original Freesound : \(failures) échec(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
 // ── Mesure de la fouille : archive-check --hunt "thème" ───────────────────
 if let i = CommandLine.arguments.firstIndex(of: "--hunt"), i + 1 < CommandLine.arguments.count {
     let theme = CommandLine.arguments[i + 1]
@@ -345,6 +446,12 @@ if CommandLine.arguments.contains("--live") {
             let parts = (fm.enumerator(atPath: dl.path)?.allObjects as? [String] ?? []).filter { $0.hasSuffix(".part") }
             check(parts.isEmpty, "aucun .part laissé")
         } catch { check(false, "téléchargement réel : \(error)") }
+        // Toutes les sources d'un coup : chacune rend compte, Gutenberg n'empêche rien.
+        let t0all = Date()
+        let (allPage, outs) = await Sources.searchAll("foghorn", useCache: false)
+        for o in outs { print(String(format: "  toutes       %@ : %@ (%.1f s)", o.source, o.error ?? "\(o.count) résultats", o.seconds)) }
+        print(String(format: "  toutes       %d résultats fusionnés en %.1f s", allPage.results.count, Date().timeIntervalSince(t0all)))
+        check(outs.count == Sources.allSources.count && allPage.results.count >= 40, "toutes les sources rendent compte")
         // Un item réservé (401) : écarté au premier essai, avec la raison en clair.
         let reserved = Item(title: "Réservé", creator: "", year: "", type: "audio", description: "", url: "",
                             thumbnail: "", source: "archive.org", identifier: "91zii2jfnnmmpcw7gxlt6fs4z9w82uq2sawnt81d")

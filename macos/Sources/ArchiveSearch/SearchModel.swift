@@ -6,7 +6,8 @@ import Foundation
 /// plugins de macro n'existent pas.
 @MainActor
 final class SearchModel: ObservableObject {
-    @Published var source = "archive.org"
+    /// Toutes les sources par défaut : c'est le geste qu'on refaisait le plus.
+    @Published var source = Sources.allID
     @Published var text = ""
     @Published var type: SearchType = .all
     @Published var sort: SortOption = .relevance
@@ -33,10 +34,19 @@ final class SearchModel: ObservableObject {
     /// Résultats d'une fouille : par quels termes et à quelle proximité.
     @Published private(set) var huntInfo: [String: (hits: [String], rel: Double?)] = [:]
     @Published private(set) var isHunt = false
+    /// Recherche sur toutes les sources : ce que chacune a rendu, et celles
+    /// qui n'ont pas encore répondu.
+    @Published private(set) var outcomes: [Sources.Outcome] = []
+    @Published private(set) var pending: [String] = []
+    /// N'afficher qu'une source parmi les résultats fusionnés.
+    @Published var sourceFilter: String?
 
     private var task: Task<Void, Never>?
 
-    var visible: [Item] { onlyReusable ? results.filter { $0.license?.free == true } : results }
+    var visible: [Item] {
+        results.filter { (!onlyReusable || $0.license?.free == true) && (sourceFilter == nil || $0.source == sourceFilter) }
+    }
+    var isAll: Bool { source == Sources.allID }
     var hiddenCount: Int { results.count - visible.count }
     var isArchive: Bool { source == "archive.org" }
     var sourceLabel: String { Sources.all.first { $0.id == source }?.label ?? source }
@@ -55,6 +65,9 @@ final class SearchModel: ObservableObject {
                                 collection: isArchive ? collection : .all, page: page)
         task?.cancel()
         loading = true
+        sourceFilter = nil
+        if isAll { searchAll(query); return }
+        outcomes = []; pending = []
         task = Task {
             do {
                 let p = try await Sources.search(query)
@@ -80,13 +93,51 @@ final class SearchModel: ObservableObject {
         }
     }
 
+    /// Toutes les sources en parallèle, affichées au fil des réponses :
+    /// Gutenberg (15 à 30 s) ne fait pas attendre les autres.
+    private func searchAll(_ query: SearchQuery) {
+        let q = query.text
+        outcomes = []
+        pending = Sources.allSources
+        results = []; total = nil; hasMore = false; related = Related(); newIDs = []
+        huntInfo = [:]; isHunt = false; page = query.page; selection = nil
+        shownLabel = "« \(q) » · toutes les sources"
+        task = Task {
+            var lists: [String: [Item]] = [:]
+            let (p, outs) = await Sources.searchAll(q, page: query.page) { [weak self] o, items in
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else { return }
+                    lists[o.source] = items
+                    self.outcomes.append(o)
+                    self.pending.removeAll { $0 == o.source }
+                    self.results = Sources.interleave(Sources.allSources.compactMap { lists[$0] })
+                    // Dès la première source, on montre : c'est tout l'intérêt.
+                    if self.loading && !self.results.isEmpty { self.loading = false }
+                }
+            }
+            guard !Task.isCancelled else { return }
+            let fresh = History.record(query, p.results)
+            newIDs = fresh
+            historyTick += 1
+            results = fresh.isEmpty ? p.results
+                : p.results.filter { fresh.contains(History.seenID($0)) } + p.results.filter { !fresh.contains(History.seenID($0)) }
+            outcomes = outs
+            pending = []
+            total = p.total; hasMore = p.hasMore; related = p.related
+            if p.results.isEmpty {
+                notice = outs.allSatisfy { $0.error != nil } ? "Aucune source n'a répondu." : "Rien trouvé."
+            }
+            loading = false
+        }
+    }
+
     /// La récolte classée d'une fouille. Pas d'historique : une fouille de
     /// quinze termes y créerait quinze entrées.
     static let huntShown = 120
     func showHunt(_ ranked: [Hunt.Ranked], theme: String) {
         task?.cancel(); loading = false; error = nil; notice = nil
         let shown = Array(ranked.prefix(Self.huntShown))
-        results = shown.map(\.item)
+        results = shown.map(\.item); outcomes = []; pending = []; sourceFilter = nil
         huntInfo = Dictionary(uniqueKeysWithValues: shown.map { ($0.item.id, ($0.hits, $0.rel)) })
         total = ranked.count; hasMore = false; page = 1; newIDs = []; isHunt = true
         related = relatedTerms(results, query: theme)
@@ -117,6 +168,7 @@ final class SearchModel: ObservableObject {
         task = Task {
             do {
                 if let item = try await Sources.randomArchiveItem() {
+                    outcomes = []; pending = []; sourceFilter = nil
                     results = [item]; total = 1; hasMore = false; page = 1; newIDs = []; huntInfo = [:]; isHunt = false
                     related = Related(); shownLabel = "🎲 Surprise"
                     selection = item.id

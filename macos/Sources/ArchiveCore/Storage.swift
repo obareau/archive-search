@@ -26,8 +26,20 @@ public enum Store {
         public var file: URL { Store.url("\(rawValue).json") }
     }
 
-    public static func readList(_ l: List) -> [Item] { read([Item].self, l.file) ?? [] }
-    public static func writeList(_ l: List, _ items: [Item]) throws { try write(items, l.file) }
+    /// Le « panier » est celui du projet actif (voir `Projects`) ; les favoris
+    /// restent une liste unique.
+    public static func readList(_ l: List) -> [Item] {
+        l == .cart ? Projects.load().activeProject.items : (read([Item].self, l.file) ?? [])
+    }
+    public static func writeList(_ l: List, _ items: [Item]) throws {
+        if l == .cart {
+            var st = Projects.load()
+            st.projects[st.activeIndex].items = items
+            try Projects.save(st)
+        } else {
+            try write(items, l.file)
+        }
+    }
 
     /// Reprise des fichiers de la version web (copiés depuis l'ancien serveur).
     /// Fusion, jamais remplacement : ce qui est déjà dans l'app reste.
@@ -245,5 +257,107 @@ public enum Credits {
         } catch {
             return false
         }
+    }
+}
+
+// ── Paniers par projet ────────────────────────────────────────────────────
+// Un panier unique mélangeait l'épisode 12 et la séance AZA 14. Chaque projet
+// a ses items, sa fiche de crédits et le dossier où il se télécharge.
+public enum Projects {
+    public struct Project: Codable, Sendable, Identifiable, Hashable {
+        public var name: String
+        public var items: [Item]
+        /// Dernier dossier de téléchargement : le dialogue s'y rouvre.
+        public var folder: String?
+        public var id: String { name }
+        public init(name: String, items: [Item] = [], folder: String? = nil) {
+            self.name = name; self.items = items; self.folder = folder
+        }
+    }
+
+    public struct State: Codable, Sendable {
+        public var active: String
+        public var projects: [Project]
+        public var activeIndex: Int { projects.firstIndex { $0.name == active } ?? 0 }
+        public var activeProject: Project { projects[activeIndex] }
+    }
+
+    public static let defaultName = "Panier"
+    public static var file: URL { Store.url("projects.json") }
+
+    /// Premier lancement : l'ancien `cart.json` devient le projet « Panier ».
+    public static func load() -> State {
+        if let st = Store.read(State.self, file), !st.projects.isEmpty { return st }
+        let legacy = Store.read([Item].self, Store.List.cart.file) ?? []
+        return State(active: defaultName, projects: [Project(name: defaultName, items: legacy)])
+    }
+
+    public static func save(_ st: State) throws { try Store.write(st, file) }
+
+    /// Nom libre, unique, sans espaces autour. Rend le nom retenu.
+    static func uniqueName(_ raw: String, in st: State, except: String? = nil) -> String {
+        let base = raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Projet" : raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = base, n = 2
+        while st.projects.contains(where: { $0.name == name && $0.name != except }) { name = "\(base) \(n)"; n += 1 }
+        return name
+    }
+
+    @discardableResult
+    public static func create(_ raw: String) throws -> String {
+        var st = load()
+        let name = uniqueName(raw, in: st)
+        st.projects.append(Project(name: name))
+        st.active = name
+        try save(st)
+        return name
+    }
+
+    public static func select(_ name: String) throws {
+        var st = load()
+        guard st.projects.contains(where: { $0.name == name }) else { return }
+        st.active = name
+        try save(st)
+    }
+
+    @discardableResult
+    public static func rename(_ old: String, to raw: String) throws -> String {
+        var st = load()
+        guard let i = st.projects.firstIndex(where: { $0.name == old }) else { return old }
+        let name = uniqueName(raw, in: st, except: old)
+        st.projects[i].name = name
+        if st.active == old { st.active = name }
+        try save(st)
+        return name
+    }
+
+    /// Le dernier projet ne se supprime pas : il en faut toujours un actif.
+    public static func delete(_ name: String) throws {
+        var st = load()
+        guard st.projects.count > 1 else { return }
+        st.projects.removeAll { $0.name == name }
+        if st.active == name { st.active = st.projects[0].name }
+        try save(st)
+    }
+
+    public static func setFolder(_ folder: URL, for name: String) throws {
+        var st = load()
+        guard let i = st.projects.firstIndex(where: { $0.name == name }) else { return }
+        st.projects[i].folder = folder.path
+        try save(st)
+    }
+
+    /// Crédits du projet en Markdown, prêts pour des notes d'épisode ou le vault.
+    public static func creditsMarkdown(_ p: Project) -> String {
+        var lines = ["## Crédits — \(p.name)", ""]
+        for it in p.items {
+            let lic = it.license ?? .none
+            var l = "- **\(it.title)**"
+            if !it.creator.isEmpty && it.creator != "N/A" { l += " — \(it.creator)" }
+            l += " · [\(it.source)](\(it.url))"
+            l += " · " + (lic.code.isEmpty ? "licence non déclarée" : (lic.url.isEmpty ? lic.code : "[\(lic.code)](\(lic.url))"))
+            if lic.free != true { l += lic.free == false ? " ⚠ restrictive" : " ⚠ à vérifier" }
+            lines.append(l)
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 }

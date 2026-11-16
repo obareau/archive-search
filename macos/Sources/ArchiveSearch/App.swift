@@ -21,7 +21,7 @@ struct ArchiveSearchApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Archive Search") {
+        WindowGroup("Archive Search", id: "main") {
             ContentView()
                 .environmentObject(library)
                 .environmentObject(downloads)
@@ -48,6 +48,15 @@ struct ArchiveSearchApp: App {
                     NSWorkspace.shared.open(root)
                 }
             }
+        }
+
+        // La veille tourne fenêtre fermée : l'icône dans la barre des menus dit
+        // ce qu'elle a trouvé et rouvre la recherche. Visible tant qu'une
+        // recherche est surveillée.
+        MenuBarExtra(isInserted: Binding(get: { watch.watchedCount > 0 }, set: { _ in })) {
+            WatchMenu(watch: watch)
+        } label: {
+            Image(systemName: watch.totalNew > 0 ? "binoculars.fill" : "binoculars")
         }
 
         Settings {
@@ -219,5 +228,41 @@ struct FreesoundOAuthSection: View {
             }
             busy = false
         }
+    }
+}
+
+/// Contenu du menu de la barre des menus.
+struct WatchMenu: View {
+    @ObservedObject var watch: WatchModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        let entries = History.watched()
+        let _ = watch.tick   // relu après chaque passage
+        Text(watch.running ? "Veille : passage en cours…"
+             : "Veille : \(entries.count) recherche\(entries.count > 1 ? "s" : "")"
+               + (watch.lastPass.map { " · dernier passage \($0.formatted(.relative(presentation: .named)))" } ?? ""))
+        Divider()
+        ForEach(entries) { e in
+            Button {
+                watch.pendingReplay = e.entry.searchQuery
+                show()
+            } label: {
+                Text("\(e.entry.new_count > 0 ? "✦ \(e.entry.new_count) · " : "")\(e.entry.query) — \(Sources.all.first { $0.id == e.entry.source }?.label ?? e.entry.source)")
+            }
+        }
+        Divider()
+        Button("Vérifier maintenant") { watch.checkNow() }.disabled(watch.running)
+        Button("Ouvrir Archive Search") { show() }
+        Divider()
+        Button("Quitter") { NSApp.terminate(nil) }
+    }
+
+    private func show() {
+        if NSApp.windows.contains(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true }) == false {
+            openWindow(id: "main")
+        }
+        NSApp.activate()
+        NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true }?.makeKeyAndOrderFront(nil)
     }
 }

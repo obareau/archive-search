@@ -72,9 +72,24 @@ rendu ; un clic n'affiche que celle-là. Gutenberg, qui met 15 à 30 s, complèt
 la liste à son arrivée sans faire attendre les autres, et une source en panne
 est signalée sans rien bloquer.
 
+**Filtres côté source**, sous la barre : pour Freesound, la durée, le tempo et
+« CC0 seulement » ; pour archive.org, la décennie. C'est la source elle-même qui
+filtre : chaque page ramène vingt résultats qui conviennent, là où la case
+« réutilisable seulement » ne trie que les vingt reçus. Une recherche filtrée
+est une recherche à part dans l'historique, et la veille la relance avec ses
+filtres.
+
 Un résultat sélectionné se lit dans le panneau de droite : film ou audio
 d'archive.org, aperçu Freesound, PDF, image Wikimedia. Pour archive.org, le
 panneau donne aussi le lien du fichier et le `.torrent`.
+
+Pour un son Freesound, le panneau donne aussi **Sons similaires** (proximité
+acoustique calculée par Freesound, aussi dans le menu contextuel), ainsi que le
+**tempo et la tonalité estimés**.
+
+⚠️ Freesound calcule ce tempo et cette tonalité pour **tous** les sons, même sans
+rythme ni note : une corne de brume « à 108 BPM, do mineur ». L'app les marque
+comme estimés, et ne les affiche sur les lignes que si l'on filtre par tempo.
 
 Sous la barre, trois familles de **propositions connexes**, tirées des
 résultats déjà obtenus. Elles ne coûtent aucun appel réseau de plus, et marchent
@@ -182,6 +197,11 @@ l'app tourne, et une notification macOS **seulement s'il y a du neuf**. Un clic
 sur la notification rouvre la recherche. Avec une veille active, fermer la
 fenêtre ne quitte pas l'app (⌘Q la quitte). Si le Mac était éteint à l'heure
 prévue, le passage manqué se fait au lancement suivant.
+
+Tant qu'une recherche est sous veille, des **jumelles** s'affichent dans la
+barre des menus (pleines s'il y a du neuf). Leur menu liste les recherches
+surveillées avec leurs nouveautés ; un clic rouvre la recherche, même fenêtre
+fermée. On y trouve aussi « Vérifier maintenant ».
 
 Les recherches sont espacées de 20 s : six requêtes d'affilée ressemblent à du
 moissonnage et finissent limitées. Une source en panne est notée, elle
@@ -297,7 +317,7 @@ projet « Panier » au premier lancement), `favorites.json`, `history.json`,
 ## Développement
 
 ```bash
-swift run --package-path macos archive-check            # 78 vérifications, sans réseau
+swift run --package-path macos archive-check            # 89 vérifications, sans réseau
 swift run --package-path macos archive-check --live     # + une requête par source, un vrai téléchargement
 swift run --package-path macos archive-check --original # un vrai WAV Freesound (compte connecté), sur données jetables
 swift run --package-path macos archive-check --hunt "brume et cornes de brume sur une côte de nuit"

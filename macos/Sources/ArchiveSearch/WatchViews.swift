@@ -37,6 +37,9 @@ final class WatchModel: NSObject, ObservableObject, UNUserNotificationCenterDele
         Task { try? await Task.sleep(for: .seconds(20)); runIfDue() }
     }
 
+    /// Nouveautés du dernier passage de chaque recherche surveillée.
+    var totalNew: Int { _ = tick; return History.watched().reduce(0) { $0 + $1.entry.new_count } }
+
     var nextPass: Date? {
         guard watchedCount > 0 else { return nil }
         return (lastPass ?? .distantPast).addingTimeInterval(Watch.interval)

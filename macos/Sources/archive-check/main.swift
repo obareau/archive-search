@@ -332,6 +332,25 @@ do {
     check(decoded?.format == "wav", "format d'origine conservé")
 }
 
+// ── Filtres côté source, BPM, clés d'historique ──────────────────────────
+do {
+    let none = SourceFilters()
+    check(none.freesoundFilter == nil && none.archiveClause == nil && none.isEmpty, "sans filtre : rien d'envoyé")
+    let f = SourceFilters(minDuration: 5, maxDuration: 30, cc0Only: true, minBPM: 110, maxBPM: nil, decade: 1950)
+    check(f.freesoundFilter == "duration:[5.0 TO 30.0] license:\"Creative Commons 0\" bpm:[110 TO *]", "filtre Freesound en syntaxe Solr : \(f.freesoundFilter ?? "nil")")
+    check(f.archiveClause == " AND year:[1950 TO 1959]", "décennie archive.org")
+    let q = SearchQuery(source: "freesound", text: "rain")
+    var qf = q; qf.filters = SourceFilters(cc0Only: true)
+    check(History.key(q) == "freesound|rain|||", "clé d'historique inchangée sans filtre (compatible version web)")
+    check(History.key(qf) != History.key(q), "un filtre fait une autre recherche")
+    History.record(qf, its(["z"])); History.setWatch(History.key(qf), true)
+    check(History.watched().first { $0.key == History.key(qf) }?.entry.searchQuery.filters.cc0Only == true, "la veille relance avec ses filtres")
+    History.forget(History.key(qf))
+    var it = SON; it.bpm = 108.4; it.tonality = "C minor"
+    check(it.analysisLabel == "≈ 108 BPM · C minor", "BPM et tonalité marqués comme estimés : \(it.analysisLabel ?? "nil")")
+    check(SON.analysisLabel == nil, "pas d'analyse : rien d'affiché")
+}
+
 // ── Glisser : un fichier pris part comme URL de fichier ──────────────────
 do {
     let f = TMP.appendingPathComponent("drag/son.wav"); touch(f)
@@ -489,6 +508,26 @@ if CommandLine.arguments.contains("--live") {
                 check(size > 1000, "le son glissé arrive comme fichier")
             }
         } catch { check(false, "glisser : \(error.localizedDescription)") }
+        // Filtres côté source et sons similaires, en réel.
+        do {
+            var fq = SearchQuery(source: "freesound", text: "drum loop")
+            fq.filters = SourceFilters(minBPM: 118, maxBPM: 122)
+            let fp = try await Sources.search(fq, useCache: false)
+            let inRange = fp.results.allSatisfy { ($0.bpm ?? 0) >= 118 && ($0.bpm ?? 0) <= 122 }
+            print("  filtre BPM   \(fp.results.count) boucles, BPM : \(fp.results.prefix(5).compactMap { $0.bpm.map { Int($0) } })")
+            check(!fp.results.isEmpty && inRange, "Freesound filtre lui-même le tempo")
+            var cq = SearchQuery(source: "freesound", text: "rain"); cq.filters = SourceFilters(maxDuration: 5, cc0Only: true)
+            let cp = try await Sources.search(cq, useCache: false)
+            check(!cp.results.isEmpty && cp.results.allSatisfy { $0.license?.code == "CC0" }, "CC0 seulement, filtré par Freesound")
+            var aq = SearchQuery(source: "archive.org", text: "civil defense", type: .film); aq.filters = SourceFilters(decade: 1950)
+            let ap = try await Sources.search(aq, useCache: false)
+            let years = ap.results.compactMap { Int($0.year.prefix(4)) }
+            print("  décennie     \(ap.results.count) films, années : \(Set(years).sorted())")
+            check(!years.isEmpty && years.allSatisfy { (1950...1959).contains($0) }, "archive.org filtre la décennie")
+            let sim = try await Sources.freesoundSimilar("4242")
+            print("  similaires   \(sim.count) sons proches de 4242 : \(sim.prefix(3).map(\.title))")
+            check(!sim.isEmpty && !sim.contains { $0.identifier == "4242" }, "sons similaires, sans le son lui-même")
+        } catch { check(false, "filtres / similaires : \(error.localizedDescription)") }
         // Un item réservé (401) : écarté au premier essai, avec la raison en clair.
         let reserved = Item(title: "Réservé", creator: "", year: "", type: "audio", description: "", url: "",
                             thumbnail: "", source: "archive.org", identifier: "91zii2jfnnmmpcw7gxlt6fs4z9w82uq2sawnt81d")

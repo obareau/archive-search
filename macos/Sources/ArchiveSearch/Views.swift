@@ -58,7 +58,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 640, minHeight: 420)
         .inspector(isPresented: $showInspector) {
-            PlayerPane(item: selected, player: player)
+            PlayerPane(item: selected, player: player) { model.showSimilar($0); pane = .results }
                 .asSurface(alt: true)
                 .inspectorColumnWidth(min: 300, ideal: 420, max: 700)
         }
@@ -139,6 +139,7 @@ struct ContentView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            FiltersRow(model: model)
             if model.isArchive {
                 HStack(spacing: 8) {
                     Picker("Type", selection: $model.type) {
@@ -216,7 +217,8 @@ struct ContentView: View {
                 List(selection: $model.selection) {
                     ForEach(model.visible) { item in
                         ResultRow(item: item, taken: library.taken.contains(item.key), isNew: model.isNew(item),
-                                  hunt: model.huntInfo[item.id]).tag(item.id)
+                                  hunt: model.huntInfo[item.id], showAnalysis: model.filters.hasBPM,
+                                  onSimilar: { model.showSimilar($0) }).tag(item.id)
                     }
                     if model.page > 1 || model.hasMore { pager.listRowSeparator(.hidden) }
                 }
@@ -255,6 +257,58 @@ struct ContentView: View {
             Button("Suivant ▶") { model.search(page: model.page + 1) }.disabled(!model.hasMore)
         }
         .padding(.vertical, 8)
+    }
+}
+
+/// Filtres passés à la source elle-même : ils ramènent vingt résultats qui
+/// conviennent, au lieu de trier les vingt reçus.
+struct FiltersRow: View {
+    @ObservedObject var model: SearchModel
+
+    static let durations: [(String, Double?, Double?)] = [
+        ("Toute durée", nil, nil), ("< 5 s", nil, 5), ("5 à 30 s", 5, 30), ("30 s à 2 min", 30, 120), ("> 2 min", 120, nil),
+    ]
+    static let tempos: [(String, Int?, Int?)] = [
+        ("Tout tempo", nil, nil), ("60–90 BPM", 60, 90), ("90–110 BPM", 90, 110), ("110–130 BPM", 110, 130),
+        ("130–150 BPM", 130, 150), ("> 150 BPM", 150, nil),
+    ]
+    static let decades: [Int] = Array(stride(from: 1900, through: 2020, by: 10))
+
+    var body: some View {
+        if model.usesFreesound || model.usesArchive {
+            HStack(spacing: 8) {
+                if model.usesFreesound {
+                    if model.isAll { Text("Freesound").asFont(.caption).foregroundStyle(.secondary) }
+                    Picker("Durée", selection: Binding(
+                        get: { Self.durations.firstIndex { $0.1 == model.filters.minDuration && $0.2 == model.filters.maxDuration } ?? 0 },
+                        set: { model.filters.minDuration = Self.durations[$0].1; model.filters.maxDuration = Self.durations[$0].2 })) {
+                        ForEach(Self.durations.indices, id: \.self) { Text(Self.durations[$0].0).tag($0) }
+                    }.labelsHidden().fixedSize()
+                    Picker("Tempo", selection: Binding(
+                        get: { Self.tempos.firstIndex { $0.1 == model.filters.minBPM && $0.2 == model.filters.maxBPM } ?? 0 },
+                        set: { model.filters.minBPM = Self.tempos[$0].1; model.filters.maxBPM = Self.tempos[$0].2 })) {
+                        ForEach(Self.tempos.indices, id: \.self) { Text(Self.tempos[$0].0).tag($0) }
+                    }.labelsHidden().fixedSize()
+                    .help("Tempo estimé par Freesound : utile pour les boucles et la musique, sans valeur pour un son sans rythme")
+                    // Étiquettes masquées sélecteur par sélecteur : posé sur la
+                    // rangée, labelsHidden() effaçait aussi le libellé de la case.
+                    Toggle(isOn: $model.filters.cc0Only) { Text("CC0 seulement") }.toggleStyle(.checkbox)
+                        .help("Domaine public : réutilisable sans attribution. Filtré par Freesound, donc vingt résultats CC0 par page")
+                }
+                if model.usesArchive {
+                    if model.isAll { Text("archive.org").asFont(.caption).foregroundStyle(.secondary) }
+                    Picker("Décennie", selection: $model.filters.decade) {
+                        Text("Toute époque").tag(Int?.none)
+                        ForEach(Self.decades, id: \.self) { Text("années \(String($0))").tag(Int?.some($0)) }
+                    }.labelsHidden().fixedSize()
+                }
+                Spacer()
+                if !model.effectiveFilters.isEmpty {
+                    Button("Sans filtre") { model.filters = SourceFilters() }.buttonStyle(.link).asFont(.caption)
+                }
+            }
+            .controlSize(.small)
+        }
     }
 }
 
@@ -340,13 +394,18 @@ struct ResultRow: View {
     var taken = false
     var isNew = false
     var hunt: (hits: [String], rel: Double?)?
+    /// Montrer BPM et tonalité sur la ligne : seulement quand on filtre par
+    /// tempo. Sinon ils mentent sur un son sans rythme.
+    var showAnalysis = false
+    var onSimilar: ((Item) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             thumb
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title).asFont(.headline).lineLimit(2)
-                Text([item.creator, item.year, item.type, item.source].filter { !$0.isEmpty && $0 != "N/A" }
+                Text(([item.creator, item.year, item.type, item.source] + (showAnalysis ? [item.analysisLabel ?? ""] : []))
+                    .filter { !$0.isEmpty && $0 != "N/A" }
                     .joined(separator: " · "))
                     .asFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !item.description.isEmpty {
@@ -387,6 +446,10 @@ struct ResultRow: View {
             if isNew { Rectangle().fill(.tint).frame(width: 3).offset(x: -8) }
         }
         .contextMenu {
+            if item.source == "freesound", let onSimilar {
+                Button("Sons similaires") { onSimilar(item) }
+                Divider()
+            }
             if let f = Journal.live(item).1.first {
                 Button("Afficher le fichier dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([f]) }
             }

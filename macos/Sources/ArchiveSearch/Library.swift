@@ -140,17 +140,17 @@ struct ItemButtons: View {
             let inCart = library.contains(.cart, item)
             Button { library.toggle(.cart, item) } label: {
                 Image(systemName: inCart ? "basket.fill" : "plus.circle")
-                    .foregroundStyle(inCart ? Color.amber : .secondary)
+                    .foregroundStyle(inCart ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
             .help(inCart ? "Retirer de « \(library.activeProject) »" : "Ajouter à « \(library.activeProject) »")
             let fav = library.contains(.favorites, item)
             Button { library.toggle(.favorites, item) } label: {
-                Image(systemName: fav ? "star.fill" : "star").foregroundStyle(fav ? Color.amber : .secondary)
+                Image(systemName: fav ? "star.fill" : "star").foregroundStyle(fav ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
             .help(fav ? "Retirer des favoris" : "Ajouter aux favoris")
         }
         .buttonStyle(.borderless)
-        .font(.title3)
+        .asFont(.title3)
     }
 }
 
@@ -203,7 +203,7 @@ struct CartBar: View {
                 Button {
                     downloads.chooseAndStart(items, library: library)
                 } label: { Label("Télécharger…", systemImage: "arrow.down.circle") }
-                    .buttonStyle(.borderedProminent).tint(.amber)
+                    .buttonStyle(.borderedProminent)
                     .disabled(items.isEmpty || downloads.running)
                 Button {
                     copyLinks(items)
@@ -217,8 +217,8 @@ struct CartBar: View {
             Text(downloadable == items.count
                  ? "\(items.count) item\(items.count > 1 ? "s" : "")"
                  : "\(items.count) items, dont \(items.count - downloadable) sans fichier téléchargeable (Gutenberg, Wikimedia, LibriVox ne renvoient qu'une page)")
-                .font(.caption).foregroundStyle(.secondary)
-            if let copied { Text(copied).font(.caption).foregroundStyle(.secondary) }
+                .asFont(.caption).foregroundStyle(.secondary)
+            if let copied { Text(copied).asFont(.caption).foregroundStyle(.secondary) }
         }
         .padding(12)
         .alert(naming == .rename ? "Renommer le projet" : "Nouveau projet",
@@ -284,8 +284,8 @@ struct DownloadStrip: View {
                     if p.attempt > 1 { Text("essai \(p.attempt)/\(Downloader.retries)").foregroundStyle(.orange) }
                     Button("Arrêter") { downloads.cancel() }.controlSize(.small)
                 }
-                .font(.callout)
-                ProgressView(value: downloads.fraction).tint(.amber)
+                .asFont(.callout)
+                ProgressView(value: downloads.fraction)
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(.bar)
@@ -302,7 +302,7 @@ struct DownloadReport: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(p.cancelled ? "Lot arrêté" : p.errors.isEmpty ? "Lot terminé" : "Lot terminé, avec des refus")
-                .font(.title2.weight(.semibold))
+                .asHeading(.title2).fontWeight(.semibold)
             Text("\(p.written.count) fichier\(p.written.count > 1 ? "s" : "") en place sur \(p.total)"
                  + (p.reused.isEmpty ? "" : ", dont \(p.reused.count) repris sans réseau") + ".")
             ScrollView {
@@ -334,9 +334,9 @@ struct DownloadReport: View {
     @ViewBuilder private func section(_ title: String, _ lines: [String], _ icon: String, _ color: Color) -> some View {
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 3) {
-                Label(title, systemImage: icon).foregroundStyle(color).font(.headline)
+                Label(title, systemImage: icon).foregroundStyle(color).asFont(.headline)
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, l in
-                    Text(l).font(.callout).textSelection(.enabled)
+                    Text(l).asFont(.callout).textSelection(.enabled)
                 }
             }
         }
@@ -357,25 +357,25 @@ struct JournalView: View {
                 List(entries) { e in
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(e.entry.title).font(.headline).lineLimit(1)
+                            Text(e.entry.title).asFont(.headline).lineLimit(1)
                             Text([e.entry.source, e.entry.creator, e.entry.license].filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .asFont(.caption).foregroundStyle(.secondary)
                             ForEach(e.missing ? e.entry.paths : e.livePaths, id: \.self) { path in
-                                Text(path).font(.caption.monospaced()).foregroundStyle(e.missing ? .red : .secondary)
+                                Text(path).asFont(.caption, mono: true).foregroundStyle(e.missing ? .red : .secondary)
                                     .lineLimit(1).truncationMode(.head)
                             }
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text(String(e.entry.at.prefix(10))).font(.caption).monospacedDigit()
+                            Text(String(e.entry.at.prefix(10))).asFont(.caption).monospacedDigit()
                             if e.missing {
-                                Text("disparu").font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                                Text("disparu").asFont(.caption2).fontWeight(.semibold).foregroundStyle(.red)
                             } else {
                                 Button("Afficher") {
                                     NSWorkspace.shared.activateFileViewerSelecting(e.livePaths.map { URL(fileURLWithPath: $0) })
                                 }.controlSize(.small)
                                 if e.livePaths.count > 1 {
-                                    Text("\(e.livePaths.count) copies").font(.caption2).foregroundStyle(.secondary)
+                                    Text("\(e.livePaths.count) copies").asFont(.caption2).foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -383,6 +383,7 @@ struct JournalView: View {
                     .padding(.vertical, 3)
                 }
                 .listStyle(.inset)
+                .asSurface()
             }
         }
         .onAppear { entries = Journal.list() }

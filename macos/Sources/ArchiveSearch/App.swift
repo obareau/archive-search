@@ -7,6 +7,7 @@ struct ArchiveSearchApp: App {
     @StateObject private var library = LibraryModel()
     @StateObject private var downloads = DownloadModel()
     @StateObject private var watch = WatchModel()
+    @StateObject private var prefs = Prefs()
 
     init() {
         // Pas de restauration de fenêtres : après un arrêt brutal, macOS
@@ -25,11 +26,19 @@ struct ArchiveSearchApp: App {
                 .environmentObject(library)
                 .environmentObject(downloads)
                 .environmentObject(watch)
+                .environmentObject(prefs)
+                .asRoot(prefs)
                 .onAppear { watch.start(); delegate.watch = watch }
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
             SearchCommands()
+            CommandGroup(after: .toolbar) {
+                Button("Agrandir le texte") { prefs.bump(0.1) }.keyboardShortcut("+")
+                Button("Réduire le texte") { prefs.bump(-0.1) }.keyboardShortcut("-")
+                Button("Taille réelle") { prefs.scale = 1.0 }.keyboardShortcut("0")
+                Divider()
+            }
             CommandGroup(after: .newItem) {
                 Divider()
                 Button("Importer les données de la version web…") { importLegacyData(library: library) }
@@ -42,7 +51,8 @@ struct ArchiveSearchApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(prefs: prefs)
+                .asRoot(prefs)
         }
     }
 }
@@ -81,6 +91,18 @@ struct SearchCommands: Commands {
 }
 
 struct SettingsView: View {
+    @ObservedObject var prefs: Prefs
+
+    var body: some View {
+        TabView {
+            AppearanceSettings(prefs: prefs).tabItem { Label("Apparence", systemImage: "paintpalette") }
+            FreesoundSettings().tabItem { Label("Freesound", systemImage: "waveform") }
+        }
+        .frame(width: 560, height: 600)
+    }
+}
+
+struct FreesoundSettings: View {
     @Local private var token = FreesoundToken.read()
     @Local private var saved: String?
 
@@ -105,13 +127,12 @@ struct SettingsView: View {
                 Text("Freesound")
             } footer: {
                 Text("Leur API n'a aucun quota anonyme. La clé est rangée dans Application Support (fichier lisible par toi seul), pas dans le dépôt. Elle ne donne que la prévisualisation mp3 : le fichier d'origine exige de connecter un compte, ci-dessous.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .asFont(.caption).foregroundStyle(.secondary)
             }
             FreesoundOAuthSection()
         }
         .formStyle(.grouped)
-        .frame(width: 540, height: 640)
-        .padding(.vertical, 8)
+        .asSurface()
     }
 }
 
@@ -136,7 +157,7 @@ struct FreesoundOAuthSection: View {
                     Button("Déconnecter") { FreesoundAuth.signOut(); connected = nil; status = "Déconnecté : retour aux aperçus mp3." }
                 }
                 Text("Jeton renouvelé seul ; le courant vaut jusqu'au \(t.expires_at.formatted(date: .abbreviated, time: .shortened)).")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .asFont(.caption).foregroundStyle(.secondary)
             } else {
                 HStack {
                     Button("1. Autoriser chez Freesound ↗") {
@@ -159,7 +180,7 @@ struct FreesoundOAuthSection: View {
                             validate()
                         }
                     }
-                    .buttonStyle(.borderedProminent).tint(.amber)
+                    .buttonStyle(.borderedProminent)
                     .disabled(busy)
                     if busy { ProgressView().controlSize(.small) }
                 }
@@ -174,12 +195,12 @@ struct FreesoundOAuthSection: View {
                     }
                 }
             }
-            if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+            if let status { Text(status).asFont(.caption).foregroundStyle(.secondary) }
         } header: {
             Text("Fichiers d'origine (WAV, FLAC, AIFF…)")
         } footer: {
             Text("Après l'autorisation, Freesound renvoie vers l'adresse de retour déclarée pour l'application (sur freesound.org/apiv2/apply), avec « ?code=… » dans l'adresse : copier cette adresse ou le code. Il ne vaut que 10 minutes. Le secret client est la clé d'API ci-dessus.")
-                .font(.caption).foregroundStyle(.secondary)
+                .asFont(.caption).foregroundStyle(.secondary)
         }
     }
 

@@ -271,6 +271,20 @@ documentation d'API. Un navigateur passe ce défi, pas l'app. La recherche
 s'ouvre donc chez eux, dans le navigateur. Le fonds `library_of_congress`
 d'archive.org ne comble pas le manque : c'est du texte numérisé, pas leur audio.
 
+## Apparence
+
+Réglages (⌘,) › **Apparence**, les mêmes que dans AZA :
+
+- **taille du texte** de 80 à 180 %, aussi par ⌘+, ⌘− et ⌘0 (menu Présentation) ;
+- **police** : SF Pro, SF Mono, Menlo, ou IBM Plex Mono si elle est installée ;
+- **titres en monospace**, **interface compacte** ;
+- **thème** : Système, Béton, Machine, Nord, Solarized clair et sombre,
+  Gruvbox, ou personnalisé (fond, texte, accent, bordure). L'accent du thème
+  remplace l'ambre partout : badges, liserés, boutons.
+
+Ces réglages vivent dans les préférences macOS, pas dans les données : ce sont
+des goûts de poste.
+
 ## Données
 
 Tout vit dans `~/Library/Application Support/Archive Search/` :

@@ -136,6 +136,7 @@ struct HistoryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(entries) { e in row(e) }.listStyle(.inset)
+                .asSurface()
             }
         }
         .onAppear(perform: reload)
@@ -158,12 +159,12 @@ struct HistoryView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "eye").foregroundStyle(watch.watchedCount > 0 ? Color.amber : .secondary)
+            Image(systemName: "eye").foregroundStyle(watch.watchedCount > 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             VStack(alignment: .leading, spacing: 1) {
                 Text(watch.watchedCount == 0 ? "Aucune veille"
                      : "Veille : \(watch.watchedCount) recherche\(watch.watchedCount > 1 ? "s" : ""), toutes les \(Int(Watch.interval / 3600)) h")
-                    .font(.callout.weight(.medium))
-                Text(statusLine).font(.caption).foregroundStyle(.secondary)
+                    .asFont(.callout).fontWeight(.medium)
+                Text(statusLine).asFont(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             Button {
@@ -199,20 +200,20 @@ struct HistoryView: View {
         let en = e.entry
         return HStack(alignment: .center, spacing: 10) {
             Button { watch.setWatch(e.key, !en.watch) } label: {
-                Image(systemName: en.watch ? "eye.fill" : "eye").foregroundStyle(en.watch ? Color.amber : .secondary)
+                Image(systemName: en.watch ? "eye.fill" : "eye").foregroundStyle(en.watch ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             }
             .buttonStyle(.borderless)
             .help(en.watch ? "Sous veille : arrêter" : "Mettre sous veille (un passage toutes les 6 h, notification s'il y a du neuf)")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(en.query).font(.headline)
+                    Text(en.query).asFont(.headline)
                     if en.new_count > 0 {
                         Text("✦ \(en.new_count) nouveau\(en.new_count > 1 ? "x" : "")")
-                            .font(.caption2.weight(.semibold)).foregroundStyle(Color.amber)
+                            .asFont(.caption2).fontWeight(.semibold).foregroundStyle(.tint)
                     }
                 }
-                Text(detail(en)).font(.caption).foregroundStyle(.secondary)
+                Text(detail(en)).asFont(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Relancer") { model.replay(en.searchQuery); onReplay() }

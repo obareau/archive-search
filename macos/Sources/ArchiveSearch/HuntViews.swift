@@ -89,9 +89,9 @@ struct HuntSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Fouiller un thème").font(.title2.weight(.semibold))
+            Text("Fouiller un thème").asHeading(.title2).fontWeight(.semibold)
             Text("Un modèle déplie le thème en champ lexical, surtout en anglais. Chaque terme interroge les sources, puis le vocabulaire du fonds lui-même relance une seconde passe. Le tout est classé par proximité au thème.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .asFont(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
             TextField("brume et cornes de brume sur une côte de nuit", text: $hunt.theme)
                 .textFieldStyle(.roundedBorder).focused($themeFocused)
@@ -110,23 +110,23 @@ struct HuntSheet: View {
                 Spacer()
             }
             if let note = hunt.note {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+                Text(note).asFont(.caption).foregroundStyle(.secondary)
             }
             if let en = hunt.english {
-                Text("thème compris : « \(en) » — c'est lui qui classe la récolte").font(.caption).foregroundStyle(.secondary)
+                Text("thème compris : « \(en) » — c'est lui qui classe la récolte").asFont(.caption).foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Champ — un terme par ligne, à corriger : le modèle en propose toujours deux ou trois à jeter")
-                    .font(.caption.weight(.medium))
+                    .asFont(.caption).fontWeight(.medium)
                 TextEditor(text: $hunt.termsText)
-                    .font(.body.monospaced())
+                    .asFont(.body, mono: true)
                     .frame(minHeight: 160, maxHeight: 240)
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
             }
 
             HStack(spacing: 14) {
-                Text("Sources").font(.caption.weight(.medium))
+                Text("Sources").asFont(.caption).fontWeight(.medium)
                 ForEach(Hunt.defaultSources + ["gutenberg"], id: \.self) { s in
                     Toggle(s, isOn: Binding(get: { hunt.sources.contains(s) },
                                             set: { if $0 { hunt.sources.insert(s) } else { hunt.sources.remove(s) } }))
@@ -134,16 +134,16 @@ struct HuntSheet: View {
                         .help(s == "gutenberg" ? "15 à 30 s par requête : hors du lot par défaut" : "")
                 }
             }
-            .font(.callout)
+            .asFont(.callout)
 
             HStack {
                 let n = hunt.terms.count
                 Text(n == 0 ? "Aucun terme" : "\(n) terme\(n > 1 ? "s" : "") × \(hunt.sources.count) source\(hunt.sources.count > 1 ? "s" : ""), plus \(Hunt.pass2Terms) du fonds — compter une à trois minutes")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .asFont(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Annuler") { hunt.showSheet = false }.keyboardShortcut(.cancelAction)
                 Button("Lancer la fouille") { hunt.start(into: search) }
-                    .buttonStyle(.borderedProminent).tint(.amber)
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(hunt.terms.isEmpty || hunt.sources.isEmpty || hunt.running)
             }
@@ -170,8 +170,8 @@ struct HuntStrip: View {
                     if !p.errors.isEmpty { Text("\(p.errors.count) source(s) hors rotation").foregroundStyle(.orange) }
                     Button("Arrêter") { hunt.cancel() }.controlSize(.small)
                 }
-                .font(.callout)
-                ProgressView(value: hunt.fraction).tint(.amber)
+                .asFont(.callout)
+                ProgressView(value: hunt.fraction)
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(.bar)
@@ -188,9 +188,9 @@ struct HuntReport: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Rendement de la fouille").font(.title2.weight(.semibold))
+            Text("Rendement de la fouille").asHeading(.title2).fontWeight(.semibold)
             Text("« \(theme) » — \(p.harvested) documents récoltés, \(p.results.count) classés").foregroundStyle(.secondary)
-            Text(p.ranking).font(.caption).foregroundStyle(.secondary)
+            Text(p.ranking).asFont(.caption).foregroundStyle(.secondary)
             Table(p.report) {
                 TableColumn("Terme") { y in
                     Text(y.origin == "fonds" ? "↳ \(y.term)" : y.term)
@@ -203,7 +203,7 @@ struct HuntReport: View {
             }
             .frame(minHeight: 560)
             if !p.errors.isEmpty {
-                ForEach(p.errors, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout) }
+                ForEach(p.errors, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).asFont(.callout) }
             }
             HStack { Spacer(); Button("OK") { dismiss() }.keyboardShortcut(.defaultAction) }
         }

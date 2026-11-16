@@ -133,15 +133,15 @@ struct ItemDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
+            Text(item.title).asHeading(.title3).fontWeight(.semibold).textSelection(.enabled)
             Text([item.creator, item.year, item.type].filter { !$0.isEmpty && $0 != "N/A" }.joined(separator: " · "))
                 .foregroundStyle(.secondary)
             LicenseBadge(license: item.license, long: true)
             if !item.description.isEmpty {
-                Text(item.description).font(.callout).textSelection(.enabled)
+                Text(item.description).asFont(.callout).textSelection(.enabled)
             }
             if let kw = item.keywords, !kw.isEmpty {
-                Text(kw.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                Text(kw.joined(separator: " · ")).asFont(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 if let u = URL(string: item.url), !item.url.isEmpty {
@@ -154,6 +154,9 @@ struct ItemDetail: View {
                     Link(destination: torrent) { Label(".torrent", systemImage: "arrow.down.circle") }
                 }
             }
+            // La racine impose la couleur du texte du thème : sans ça, les
+            // liens perdaient la leur et ne se distinguaient plus.
+            .foregroundStyle(.tint)
             .padding(.top, 4)
         }
     }

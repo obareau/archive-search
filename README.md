@@ -53,8 +53,8 @@ section « Fichiers d'origine » :
 2. **Autoriser chez Freesound ↗** : la connexion se fait dans le navigateur,
    chez Freesound, aucun mot de passe ne passe par l'app ;
 3. Freesound renvoie vers l'adresse de retour déclarée pour l'application, avec
-   `?code=…` : coller ce code, ou l'adresse entière, puis **Valider**. Le code ne
-   vaut que 10 minutes.
+   `?code=…` : copier cette adresse (⌘L, ⌘C), puis **Coller l'adresse de retour
+   et valider**. Le code ne vaut que 10 minutes.
 
 Le jeton se renouvelle seul. Sans compte connecté, les sons partent en aperçu
 mp3, et le bilan du lot le dit, son par son. Un aperçu pris avant la connexion
@@ -281,6 +281,7 @@ projet « Panier » au premier lancement), `favorites.json`, `history.json`,
 ```bash
 swift run --package-path macos archive-check            # 78 vérifications, sans réseau
 swift run --package-path macos archive-check --live     # + une requête par source, un vrai téléchargement
+swift run --package-path macos archive-check --original # un vrai WAV Freesound (compte connecté), sur données jetables
 swift run --package-path macos archive-check --hunt "brume et cornes de brume sur une côte de nuit"
 ```
 

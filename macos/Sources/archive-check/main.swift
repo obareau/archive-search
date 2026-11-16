@@ -332,6 +332,48 @@ do {
     check(decoded?.format == "wav", "format d'origine conservé")
 }
 
+// ── Original Freesound réel : archive-check --original ───────────────────
+// Copie les identifiants et jetons du vrai dossier vers le dossier jetable :
+// rien n'est écrit dans les vraies données (journal, crédits, paniers).
+if CommandLine.arguments.contains("--original") {
+    let real = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Archive Search")
+    for f in ["freesound-token", "freesound-client-id", "freesound-oauth.json"] {
+        try? fm.copyItem(at: real.appendingPathComponent(f), to: TMP.appendingPathComponent(f))
+    }
+    let sema = DispatchSemaphore(value: 0)
+    Task {
+        print("  compte connecté : \(FreesoundAuth.isConnected)")
+        do {
+            let page = try await Sources.search(SearchQuery(source: "freesound", text: "foghorn"))
+            // Un original court : le plus petit à télécharger.
+            let short = page.results.filter { ($0.format ?? "mp3") != "mp3" }
+                .min { (Int($0.type.filter(\.isNumber)) ?? 999) < (Int($1.type.filter(\.isNumber)) ?? 999) }
+            guard let it = short else { check(false, "aucun original non-mp3 dans la recherche"); sema.signal(); return }
+            print("  son          « \(it.title) » (\(it.type), format \(it.format ?? "?"))")
+            let dir = TMP.appendingPathComponent("original")
+            let t0 = Date()
+            let p = await Downloader.run([it], into: dir) { _ in }
+            for e in p.errors { print("  ⚠ \(e)") }
+            for e in p.previews { print("  ⚠ aperçu : \(e)") }
+            guard let rel = p.written.first else { check(false, "original non téléchargé"); sema.signal(); return }
+            let f = dir.appendingPathComponent(rel)
+            let head = (try? FileHandle(forReadingFrom: f).read(upToCount: 4)).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            let size = (try? fm.attributesOfItem(atPath: f.path)[.size] as? Int) ?? 0
+            print(String(format: "  écrit        %@ — %@, en-tête « %@ », %.1f s", rel, ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file), head, Date().timeIntervalSince(t0)))
+            let magic = ["wav": "RIFF", "aiff": "FORM", "aif": "FORM", "flac": "fLaC", "ogg": "OggS"][it.format ?? ""] ?? head
+            check(p.previews.isEmpty && f.pathExtension == it.format && head == magic, "original au bon format, pas un aperçu")
+            check(fm.fileExists(atPath: dir.appendingPathComponent("CREDITS.txt").path) && Journal.live(it).1.count == 1, "crédits et journal de l'original")
+        } catch {
+            check(false, "recherche Freesound : \(error.localizedDescription)")
+        }
+        sema.signal()
+    }
+    sema.wait()
+    print(failures == 0 ? "✓ original Freesound vérifié" : "✗ original Freesound : \(failures) échec(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
 // ── Mesure de la fouille : archive-check --hunt "thème" ───────────────────
 if let i = CommandLine.arguments.firstIndex(of: "--hunt"), i + 1 < CommandLine.arguments.count {
     let theme = CommandLine.arguments[i + 1]

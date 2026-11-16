@@ -146,11 +146,32 @@ struct FreesoundOAuthSection: View {
                     }
                     .disabled(clientID.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                TextField("2. Coller le code, ou l'adresse de retour entière", text: $pasted)
+                // Le plus simple : copier l'adresse de retour dans le navigateur,
+                // puis un seul bouton. Dans un formulaire groupé, un TextField
+                // étiqueté n'avait pas de zone de saisie visible : on ne savait
+                // pas où coller (constaté le 2026-11-16).
                 HStack {
-                    Button("3. Valider") { validate() }
-                        .disabled(busy || FreesoundAuth.extractCode(pasted) == nil)
+                    Button("2. Coller l'adresse de retour et valider") {
+                        pasted = NSPasteboard.general.string(forType: .string) ?? ""
+                        if FreesoundAuth.extractCode(pasted) == nil {
+                            status = "Le presse-papiers ne contient pas d'adresse avec « ?code=… ». Copier l'adresse de la page où Freesound t'a renvoyé, puis réessayer."
+                        } else {
+                            validate()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent).tint(.amber)
+                    .disabled(busy)
                     if busy { ProgressView().controlSize(.small) }
+                }
+                LabeledContent("ou à la main") {
+                    HStack {
+                        TextField("", text: $pasted, prompt: Text("code, ou adresse avec ?code=…"))
+                            .textFieldStyle(.roundedBorder)
+                            .labelsHidden()
+                            .onSubmit { validate() }
+                        Button("Valider") { validate() }
+                            .disabled(busy || FreesoundAuth.extractCode(pasted) == nil)
+                    }
                 }
             }
             if let status { Text(status).font(.caption).foregroundStyle(.secondary) }

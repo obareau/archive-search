@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// Téléchargement groupé du panier. Un lot à la fois ; c'est l'app qui
 /// l'impose (le bouton est désactivé pendant un lot).
@@ -39,11 +40,7 @@ public enum Downloader {
     public static func destPath(_ folder: URL, _ item: Item, ext: String) throws -> URL {
         let sub = folder.appendingPathComponent(safeName(item.source.isEmpty ? "divers" : item.source, maxLen: 40), isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        // Beaucoup de titres Freesound finissent par « .wav » : sans ça on
-        // écrirait « pluie.wav.mp3 », qui ment sur le format réel.
-        let bare = item.title.replacingOccurrences(of: "\\.(wav|aiff?|flac|mp3|ogg|m4a)$", with: "",
-                                                   options: [.regularExpression, .caseInsensitive])
-        let base = safeName(bare.isEmpty ? "sans-titre" : bare)
+        let base = fileBase(item)
         var dest = sub.appendingPathComponent(base + ext)
         var n = 1
         while FileManager.default.fileExists(atPath: dest.path) {
@@ -51,6 +48,15 @@ public enum Downloader {
             n += 1
         }
         return dest
+    }
+
+    /// Nom de fichier sans extension. Beaucoup de titres Freesound finissent
+    /// par « .wav » : sans ça on écrirait « pluie.wav.mp3 », qui ment sur le
+    /// format réel.
+    public static func fileBase(_ item: Item) -> String {
+        let bare = item.title.replacingOccurrences(of: "\\.(wav|aiff?|flac|mp3|ogg|m4a)$", with: "",
+                                                   options: [.regularExpression, .caseInsensitive])
+        return safeName(bare.isEmpty ? "sans-titre" : bare)
     }
 
     static func ext(of url: URL) -> String {
@@ -315,5 +321,76 @@ public enum Downloader {
         func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
             lock.lock(); _task = task; lock.unlock()
         }
+    }
+}
+
+// ── Glisser un résultat hors de l'app ────────────────────────────────────
+// Ce qu'on glisse doit arriver comme un FICHIER audio dans le Finder, Logic ou
+// Ableton. Deux pièges constatés le 2026-11-16 :
+//   · `NSItemProvider(object: fileURL as NSURL)` annonce aussi `public.url`,
+//     et le Finder préférait le lien : il créait un .webloc ;
+//   · un son pas encore téléchargé ne partait que comme lien de sa page.
+// D'où : un fichier pris part comme fichier SEULEMENT ; un son téléchargeable
+// part comme fichier promis, téléchargé au moment du dépôt ; seules les
+// sources sans fichier (page web) partent comme lien.
+public enum Drag {
+    /// Dossier des fichiers livrés au dépôt : le destinataire les copie, on
+    /// ne les note pas au journal (ce n'est pas un lot de projet).
+    public static var cacheDir: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Archive Search/glisser", isDirectory: true)
+    }
+
+    static func utType(forExtension ext: String) -> UTType {
+        UTType(filenameExtension: ext.trimmingCharacters(in: CharacterSet(charactersIn: "."))) ?? .data
+    }
+
+    public static func provider(for item: Item) -> NSItemProvider {
+        let p = NSItemProvider()
+        if let f = Journal.live(item).1.first {
+            p.suggestedName = f.deletingPathExtension().lastPathComponent
+            p.registerFileRepresentation(forTypeIdentifier: utType(forExtension: f.pathExtension).identifier,
+                                         fileOptions: [], visibility: .all) { done in
+                done(f, false, nil)
+                return nil
+            }
+            return p
+        }
+        if Downloader.isDownloadable(item) {
+            // L'extension n'est sûre qu'après résolution (archive.org) : on
+            // annonce de l'audio ou de la vidéo, le fichier livré porte la vraie.
+            let ext = item.source == "freesound" ? (FreesoundAuth.isConnected ? (item.format ?? "wav") : "mp3") : ""
+            let type: UTType = ext.isEmpty ? (item.type == "movies" ? .movie : .audio) : utType(forExtension: ext)
+            p.suggestedName = Downloader.fileBase(item)
+            p.registerFileRepresentation(forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all) { done in
+                let progress = Progress(totalUnitCount: 1)
+                Task {
+                    do {
+                        let f = try await fetchForDrag(item)
+                        progress.completedUnitCount = 1
+                        done(f, false, nil)
+                    } catch {
+                        done(nil, false, error)
+                    }
+                }
+                return progress
+            }
+            return p
+        }
+        if let u = URL(string: item.url), !item.url.isEmpty { return NSItemProvider(object: u as NSURL) }
+        return NSItemProvider(object: item.title as NSString)
+    }
+
+    /// Télécharge le fichier d'un item dans le cache de glisser (ou le
+    /// reprend s'il y est déjà) et rend son chemin.
+    public static func fetchForDrag(_ item: Item) async throws -> URL {
+        let res = await Downloader.resolve(item)
+        guard let req = res.request else { throw SourceError(res.note ?? "pas de fichier à glisser") }
+        let dir = cacheDir.appendingPathComponent(Downloader.safeName(item.key, maxLen: 80), isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(Downloader.fileBase(item) + res.ext)
+        if FileManager.default.fileExists(atPath: dest.path) { return dest }
+        try await Downloader.fetch(req, to: dest) { _, _ in }
+        return dest
     }
 }

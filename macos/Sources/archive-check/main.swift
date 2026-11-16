@@ -332,6 +332,22 @@ do {
     check(decoded?.format == "wav", "format d'origine conservé")
 }
 
+// ── Glisser : un fichier pris part comme URL de fichier ──────────────────
+do {
+    let f = TMP.appendingPathComponent("drag/son.wav"); touch(f)
+    var it = SON; it.identifier = "drag1"
+    Journal.note(it, dest: f, size: 1)
+    let p = Drag.provider(for: it)
+    let types = p.registeredTypeIdentifiers
+    check(types == ["com.microsoft.waveform-audio"] && !types.contains("public.url"), "fichier pris : un fichier WAV seulement, pas de lien (.webloc) : \(types)")
+    var snd = SON; snd.identifier = "drag2"; snd.preview = "https://cdn.freesound.org/x.mp3"
+    let promised = Drag.provider(for: snd).registeredTypeIdentifiers
+    check(promised == ["public.mp3"], "son pas encore pris : un mp3 promis, pas de lien : \(promised)")
+    let wiki = Item(title: "Phare", creator: "", year: "", type: "media", description: "", url: "https://commons.wikimedia.org/x",
+                    thumbnail: "", source: "wikimedia", identifier: "File:Phare.jpg")
+    check(Drag.provider(for: wiki).registeredTypeIdentifiers.contains("public.url"), "source sans fichier : le lien de la page")
+}
+
 // ── Original Freesound réel : archive-check --original ───────────────────
 // Copie les identifiants et jetons du vrai dossier vers le dossier jetable :
 // rien n'est écrit dans les vraies données (journal, crédits, paniers).
@@ -452,6 +468,27 @@ if CommandLine.arguments.contains("--live") {
         for o in outs { print(String(format: "  toutes       %@ : %@ (%.1f s)", o.source, o.error ?? "\(o.count) résultats", o.seconds)) }
         print(String(format: "  toutes       %d résultats fusionnés en %.1f s", allPage.results.count, Date().timeIntervalSince(t0all)))
         check(outs.count == Sources.allSources.count && allPage.results.count >= 40, "toutes les sources rendent compte")
+        // Glisser un son pas encore pris : le fichier est livré au dépôt.
+        do {
+            let page = try await Sources.search(SearchQuery(source: "freesound", text: "foghorn"))
+            if var it = page.results.first(where: { !($0.preview ?? "").isEmpty }) {
+                it.identifier += "-glisser"   // pas « déjà pris »
+                let prov = Drag.provider(for: it)
+                let t = prov.registeredTypeIdentifiers.first ?? ""
+                let got: URL? = await withCheckedContinuation { c in
+                    _ = prov.loadFileRepresentation(forTypeIdentifier: t) { url, _ in
+                        // L'URL n'est valable que dans le rappel : on la copie.
+                        guard let url else { c.resume(returning: nil); return }
+                        let keep = TMP.appendingPathComponent("depose-" + url.lastPathComponent)
+                        try? fm.copyItem(at: url, to: keep)
+                        c.resume(returning: keep)
+                    }
+                }
+                let size = got.flatMap { (try? fm.attributesOfItem(atPath: $0.path)[.size] as? Int) ?? nil } ?? 0
+                print("  glisser      \(t) → \(got?.lastPathComponent ?? "rien") (\(size) octets)")
+                check(size > 1000, "le son glissé arrive comme fichier")
+            }
+        } catch { check(false, "glisser : \(error.localizedDescription)") }
         // Un item réservé (401) : écarté au premier essai, avec la raison en clair.
         let reserved = Item(title: "Réservé", creator: "", year: "", type: "audio", description: "", url: "",
                             thumbnail: "", source: "archive.org", identifier: "91zii2jfnnmmpcw7gxlt6fs4z9w82uq2sawnt81d")

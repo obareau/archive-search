@@ -332,6 +332,17 @@ do {
     check(decoded?.format == "wav", "format d'origine conservé")
 }
 
+// ── Glisser : un fichier pris part comme URL de fichier ──────────────────
+do {
+    let f = TMP.appendingPathComponent("drag/son.wav"); touch(f)
+    var it = SON; it.identifier = "drag1"
+    Journal.note(it, dest: f, size: 1)
+    let p = Drag.provider(for: it)
+    check(p.registeredTypeIdentifiers.contains("public.file-url"), "fichier glissé en public.file-url : \(p.registeredTypeIdentifiers)")
+    var web = SON; web.identifier = "drag2"
+    check(Drag.provider(for: web).registeredTypeIdentifiers.contains("public.url"), "sans fichier : le lien de la page")
+}
+
 // ── Original Freesound réel : archive-check --original ───────────────────
 // Copie les identifiants et jetons du vrai dossier vers le dossier jetable :
 // rien n'est écrit dans les vraies données (journal, crédits, paniers).

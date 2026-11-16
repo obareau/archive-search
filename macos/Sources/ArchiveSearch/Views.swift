@@ -359,7 +359,7 @@ struct ResultRow: View {
                     if taken {
                         Label("glisser vers le DAW", systemImage: "hand.draw").labelStyle(.iconOnly)
                             .font(.caption2).foregroundStyle(.secondary)
-                            .help("Fichier sur le disque : le glisser dépose le fichier lui-même (Logic, Ableton, Finder)")
+                            .help("Fichier sur le disque : glisser la vignette dépose le fichier lui-même (Logic, Ableton, Finder)")
                         Text("déjà pris").font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Color.amber.opacity(0.18), in: Capsule())
@@ -376,9 +376,6 @@ struct ResultRow: View {
             // Liseré ambre, comme la version web.
             if isNew { Rectangle().fill(Color.amber).frame(width: 3).offset(x: -8) }
         }
-        // Glisser vers Logic, Ableton ou le Finder : le FICHIER s'il est déjà
-        // sur le disque (on le dépose dans un projet), sinon le lien de la page.
-        .onDrag { Self.dragProvider(item) }
         .contextMenu {
             if let f = Journal.live(item).1.first {
                 Button("Afficher le fichier dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([f]) }
@@ -393,16 +390,18 @@ struct ResultRow: View {
         }
     }
 
-    static func dragProvider(_ item: Item) -> NSItemProvider {
-        if let f = Journal.live(item).1.first, let p = NSItemProvider(contentsOf: f) {
-            p.suggestedName = f.lastPathComponent
-            return p
-        }
-        if let u = URL(string: item.url), !item.url.isEmpty { return NSItemProvider(object: u as NSURL) }
-        return NSItemProvider(object: item.title as NSString)
+    /// Le glisser part de la VIGNETTE seulement. Posé sur toute la ligne,
+    /// `.onDrag` captait le clic avant les boutons : ➕ et ☆ ne répondaient
+    /// plus (constaté le 2026-11-16).
+    @ViewBuilder private var thumb: some View {
+        thumbImage
+            .onDrag { Drag.provider(for: item) } preview: {
+                thumbImage.frame(width: 96, height: 68)
+            }
+            .help(taken ? "Glisser le fichier vers Logic, Ableton ou le Finder" : "Glisser le lien de la page")
     }
 
-    @ViewBuilder private var thumb: some View {
+    @ViewBuilder private var thumbImage: some View {
         let box = RoundedRectangle(cornerRadius: 5)
         if let u = URL(string: item.thumbnail), !item.thumbnail.isEmpty {
             AsyncImage(url: u) { phase in

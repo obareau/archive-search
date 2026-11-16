@@ -317,3 +317,21 @@ public enum Downloader {
         }
     }
 }
+
+// ── Glisser un résultat hors de l'app ────────────────────────────────────
+public enum Drag {
+    /// Le FICHIER s'il est sur le disque, sous forme d'URL de fichier
+    /// (`public.file-url`) : c'est ce que le Finder, Logic et Ableton
+    /// acceptent. Le premier essai passait par `NSItemProvider(contentsOf:)`,
+    /// qui n'annonce que le type du contenu, et les DAW refusaient le dépôt.
+    /// Sinon, le lien de la page.
+    public static func provider(for item: Item) -> NSItemProvider {
+        if let f = Journal.live(item).1.first {
+            let p = NSItemProvider(object: f as NSURL)
+            p.suggestedName = f.lastPathComponent
+            return p
+        }
+        if let u = URL(string: item.url), !item.url.isEmpty { return NSItemProvider(object: u as NSURL) }
+        return NSItemProvider(object: item.title as NSString)
+    }
+}

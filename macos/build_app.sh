@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$HERE/build"
 APP="$BUILD/Archive Search.app"
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 echo "▸ compilation release"
 # Binaire universel : Apple Silicon + Intel

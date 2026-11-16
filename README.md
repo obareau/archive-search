@@ -133,9 +133,13 @@ le bilan du lot dit lesquels et pourquoi.
 ### Journal des téléchargements
 
 Chaque fichier écrit est noté, avec **tous** les endroits où il a été rangé. Une
-carte dont le fichier est encore sur le disque porte **déjà pris**, et se
-**glisse** directement vers Logic, Ableton ou le Finder : c'est le fichier
-lui-même qui est déposé. Les autres cartes se glissent comme lien vers leur page.
+carte dont le fichier est encore sur le disque porte **déjà pris**.
+
+**Glisser la vignette** d'un son ou d'un film vers Logic, Ableton ou le Finder
+y dépose le fichier lui-même : celui du disque s'il est déjà pris, sinon il est
+téléchargé au moment du dépôt (l'original Freesound si le compte est connecté).
+Seules les sources sans fichier (Gutenberg, Wikimedia, LibriVox) se glissent
+comme lien vers leur page.
 
 | Situation | Ce qui se passe |
 |---|---|

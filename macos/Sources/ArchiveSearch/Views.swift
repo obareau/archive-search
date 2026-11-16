@@ -398,7 +398,9 @@ struct ResultRow: View {
             .onDrag { Drag.provider(for: item) } preview: {
                 thumbImage.frame(width: 96, height: 68)
             }
-            .help(taken ? "Glisser le fichier vers Logic, Ableton ou le Finder" : "Glisser le lien de la page")
+            .help(taken ? "Glisser le fichier vers Logic, Ableton ou le Finder"
+                  : Downloader.isDownloadable(item) ? "Glisser : le fichier est téléchargé au moment du dépôt (Logic, Ableton, Finder)"
+                  : "Glisser le lien de la page : cette source ne donne pas de fichier")
     }
 
     @ViewBuilder private var thumbImage: some View {

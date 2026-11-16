@@ -48,7 +48,7 @@ public enum Sources {
     /// Toutes les sources en parallèle. `progress` reçoit chaque source dès
     /// qu'elle répond : Gutenberg met 15 à 30 s, il ne doit pas faire attendre
     /// les quatre autres. Une source en panne est notée, pas fatale.
-    public static func searchAll(_ text: String, page: Int = 1,
+    public static func searchAll(_ text: String, page: Int = 1, filters: SourceFilters = SourceFilters(),
                                  sources: [String] = allSources, useCache: Bool = true,
                                  progress: (@Sendable (Outcome, [Item]) async -> Void)? = nil)
         async -> (page: SearchPage, outcomes: [Outcome]) {
@@ -60,7 +60,7 @@ public enum Sources {
                 group.addTask {
                     let t0 = Date()
                     do {
-                        let p = try await search(SearchQuery(source: src, text: text, page: page), useCache: useCache)
+                        let p = try await search(SearchQuery(source: src, text: text, page: page, filters: filters), useCache: useCache)
                         return (Outcome(source: src, count: p.results.count, total: p.total, error: nil,
                                         seconds: Date().timeIntervalSince(t0)), p.results, p.hasMore)
                     } catch {
@@ -100,14 +100,14 @@ public enum Sources {
 
         let (results, total): ([Item], Int?)
         switch q.source {
-        case "archive.org": (results, total) = try await archiveOrg(text, q.type, q.page, q.sort, q.collection)
+        case "archive.org": (results, total) = try await archiveOrg(text, q.type, q.page, q.sort, q.collection, q.filters)
         case "gutenberg": (results, total) = try await gutenberg(text, q.page)
         case "wikimedia": (results, total) = try await wikimedia(text, q.page)
         case "librivox": (results, total) = try await librivox(text, q.page)
-        case "freesound": (results, total) = try await freesound(text, q.page)
+        case "freesound": (results, total) = try await freesound(text, q.page, q.filters)
         case allID:
             // Pour la veille et l'historique : la même recherche, fusionnée.
-            return await searchAll(text, page: q.page, useCache: useCache).page
+            return await searchAll(text, page: q.page, filters: q.filters, useCache: useCache).page
         case "loc.gov":
             throw SourceError("loc.gov ne peut pas être interrogé par l'app (défi Cloudflare) — la recherche s'ouvre sur leur site.")
         default: throw SourceError("Source inconnue : \(q.source)")
@@ -123,7 +123,8 @@ public enum Sources {
     // ── archive.org ──────────────────────────────────────────────────────
 
     static func archiveOrg(_ query: String, _ type: SearchType, _ page: Int,
-                           _ sort: SortOption, _ collection: Collection) async throws -> ([Item], Int?) {
+                           _ sort: SortOption, _ collection: Collection,
+                           _ filters: SourceFilters = SourceFilters()) async throws -> ([Item], Int?) {
         var q = "\"\(query)\""
         switch type {
         case .film: q += " AND mediatype:movies AND year:[1920 TO 1980]"
@@ -132,6 +133,7 @@ public enum Sources {
         case .all: break
         }
         if collection != .all { q += " AND collection:\(collection.rawValue)" }
+        if let c = filters.archiveClause { q += c }
         var params: [(String, String)] = [
             ("q", q),
             ("fl", "identifier,title,creator,year,mediatype,description,subject,licenseurl"),
@@ -248,21 +250,27 @@ public enum Sources {
 
     // ── Freesound ────────────────────────────────────────────────────────
 
-    static func freesound(_ query: String, _ page: Int) async throws -> ([Item], Int?) {
+    static let freesoundFields = "id,name,username,description,previews,images,duration,license,url,created,tags,type,channels,samplerate,bpm,tonality"
+
+    static func freesound(_ query: String, _ page: Int, _ filters: SourceFilters = SourceFilters()) async throws -> ([Item], Int?) {
         // Pas de quota anonyme. Sans clé on le DIT plutôt que de rendre zéro
         // résultat, qui se confondrait avec « rien trouvé ».
         let token = FreesoundToken.read()
         guard !token.isEmpty else {
             throw SourceError("Freesound demande une clé d'API. En créer une (gratuite) sur https://freesound.org/apiv2/apply/ puis la coller dans Réglages (⌘,).")
         }
-        let (data, status) = try await HTTP.json(HTTP.url("https://freesound.org/apiv2/search/text/", [
+        var params: [(String, String)] = [
             ("query", query), ("page", "\(page)"), ("page_size", "\(Config.rowsPerPage)"),
-            ("fields", "id,name,username,description,previews,images,duration,license,url,created,tags,type,channels,samplerate"),
-            ("token", token),
-        ]), source: "freesound")
+            ("fields", freesoundFields), ("token", token),
+        ]
+        if let f = filters.freesoundFilter { params.append(("filter", f)) }
+        let (data, status) = try await HTTP.json(HTTP.url("https://freesound.org/apiv2/search/text/", params), source: "freesound")
         if status == 401 || status == 403 { throw SourceError("Freesound refuse la clé (\(status)) — la vérifier dans Réglages.") }
         if status == 404 && page > 1 { return ([], (data["count"] as? NSNumber)?.intValue) }
-        let items = (data["results"] as? [JSON] ?? []).map { s -> Item in
+        return ((data["results"] as? [JSON] ?? []).map(freesoundItem), (data["count"] as? NSNumber)?.intValue)
+    }
+
+    static func freesoundItem(_ s: JSON) -> Item {
             let previews = s["previews"] as? JSON ?? [:]
             let dur = (s["duration"] as? NSNumber)?.doubleValue
             return Item(title: or(str(s["name"]), "N/A"), creator: or(str(s["username"]), "N/A"),
@@ -275,8 +283,18 @@ public enum Sources {
                         license: normalizeLicense(str(s["license"])),
                         preview: or(str(previews["preview-hq-mp3"]), str(previews["preview-lq-mp3"])),
                         format: str(s["type"]).isEmpty ? nil : str(s["type"]).lowercased())
-        }
-        return (items, (data["count"] as? NSNumber)?.intValue)
+            .with { $0.bpm = (s["bpm"] as? NSNumber)?.doubleValue; $0.tonality = str(s["tonality"]).isEmpty ? nil : str(s["tonality"]) }
+    }
+
+    /// Sons proches d'un son donné (similarité acoustique calculée par Freesound).
+    public static func freesoundSimilar(_ soundID: String) async throws -> [Item] {
+        let token = FreesoundToken.read()
+        guard !token.isEmpty else { throw SourceError("Freesound demande une clé d'API (Réglages).") }
+        let (data, status) = try await HTTP.json(HTTP.url("https://freesound.org/apiv2/sounds/\(soundID)/similar/", [
+            ("page_size", "\(Config.rowsPerPage)"), ("fields", freesoundFields), ("token", token),
+        ]), source: "freesound")
+        if status == 404 { throw SourceError("Freesound n'a pas de sons similaires calculés pour celui-ci.") }
+        return (data["results"] as? [JSON] ?? []).map(freesoundItem).filter { $0.identifier != soundID }
     }
 
     // ── Fichier direct et .torrent (archive.org seulement) ───────────────

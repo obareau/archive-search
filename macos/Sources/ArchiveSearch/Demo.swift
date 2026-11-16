@@ -7,6 +7,8 @@ import Foundation
 ///
 ///   ARCHIVE_DEMO_SEARCH="source|requête"   lance une recherche
 ///   ARCHIVE_DEMO_TYPE="film|audio|pdf"    type de document (archive.org)
+///   ARCHIVE_DEMO_BPM="110-130"           filtre de tempo Freesound
+///   ARCHIVE_DEMO_SIMILAR="1"               après la recherche, sons similaires au résultat sélectionné
 ///   ARCHIVE_DEMO_SELECT="2" | "movies"     sélectionne le n-ième résultat, ou le premier de ce type
 ///   ARCHIVE_DEMO_CART="3"                  met les n premiers résultats au panier
 ///   ARCHIVE_DEMO_PANE="cart|favorites|journal|history"
@@ -32,6 +34,9 @@ enum Demo {
             let parts = s.split(separator: "|", maxSplits: 1).map(String.init)
             if parts.count == 2 { model.source = parts[0]; model.text = parts[1] } else { model.text = s }
             if let t = env["ARCHIVE_DEMO_TYPE"].flatMap(SearchType.init(rawValue:)) { model.type = t }
+            if let b = env["ARCHIVE_DEMO_BPM"]?.split(separator: "-").compactMap({ Int($0) }), b.count == 2 {
+                model.filters.minBPM = b[0]; model.filters.maxBPM = b[1]
+            }
             model.search()
             await waitWhile { model.loading }
             try? await Task.sleep(for: .seconds(2))   // vignettes
@@ -42,6 +47,13 @@ enum Demo {
                 let item = Int(sel).flatMap { model.results.indices.contains($0 - 1) ? model.results[$0 - 1] : nil }
                     ?? model.results.first { $0.type == sel }
                 model.selection = item?.id
+                if env["ARCHIVE_DEMO_SIMILAR"] != nil, let item {
+                    try? await Task.sleep(for: .seconds(2))
+                    model.showSimilar(item)
+                    await waitWhile { model.loading }
+                    try? await Task.sleep(for: .seconds(2))
+                    model.selection = model.results.first?.id
+                }
             }
         }
         if let theme = env["ARCHIVE_DEMO_HUNT_SHEET"] ?? env["ARCHIVE_DEMO_HUNT"] {

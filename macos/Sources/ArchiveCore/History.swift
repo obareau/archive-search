@@ -21,9 +21,11 @@ public enum History {
         public var seen: [String: String]
         public var new_count: Int
         public var watch: Bool
+        /// Absent dans l'historique de la version web : aucun filtre.
+        public var filters: SourceFilters?
 
         enum CodingKeys: String, CodingKey {
-            case query, source, type, sort, collection, first_seen, last_run, runs, seen, new_count, watch
+            case query, source, type, sort, collection, first_seen, last_run, runs, seen, new_count, watch, filters
         }
         public init(from d: Decoder) throws {
             let c = try d.container(keyedBy: CodingKeys.self)
@@ -34,17 +36,20 @@ public enum History {
             seen = (try? c.decodeIfPresent([String: String].self, forKey: .seen)) ?? [:]
             new_count = (try? c.decodeIfPresent(Int.self, forKey: .new_count)) ?? 0
             watch = (try? c.decodeIfPresent(Bool.self, forKey: .watch)) ?? false
+            filters = try? c.decodeIfPresent(SourceFilters.self, forKey: .filters)
         }
         init(_ q: SearchQuery, now: String) {
             query = q.text; source = q.source; type = q.type.rawValue; sort = q.sort.rawValue
             collection = q.collection.rawValue; first_seen = now; last_run = now
             runs = 0; seen = [:]; new_count = 0; watch = false
+            filters = q.filters.isEmpty ? nil : q.filters
         }
         /// La recherche à relancer, toujours en page 1.
         public var searchQuery: SearchQuery {
             SearchQuery(source: source, text: query, type: SearchType(rawValue: type) ?? .all,
                         sort: SortOption(rawValue: sort) ?? .relevance,
-                        collection: Collection(rawValue: collection) ?? .all, page: 1)
+                        collection: Collection(rawValue: collection) ?? .all, page: 1,
+                        filters: filters ?? SourceFilters())
         }
     }
 
@@ -66,7 +71,7 @@ public enum History {
     /// sont la même recherche, et alimentent le même « déjà vu ».
     public static func key(_ q: SearchQuery) -> String {
         [q.source, q.text.trimmingCharacters(in: .whitespaces).lowercased(), q.type.rawValue,
-         q.sort.rawValue, q.collection.rawValue].joined(separator: "|")
+         q.sort.rawValue, q.collection.rawValue].joined(separator: "|") + q.filters.keySuffix
     }
 
     /// Identifiant de « déjà vu » : celui de la version web.

@@ -75,13 +75,14 @@ final class PlayerModel: ObservableObject {
 struct PlayerPane: View {
     let item: Item?
     @ObservedObject var player: PlayerModel
+    var onSimilar: ((Item) -> Void)?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let item {
                     viewer
-                    ItemDetail(item: item, torrent: player.torrent, direct: directURL)
+                    ItemDetail(item: item, torrent: player.torrent, direct: directURL, onSimilar: onSimilar)
                 } else {
                     ContentUnavailableView("Rien de sélectionné", systemImage: "play.rectangle",
                                            description: Text("Choisir un résultat pour le lire ou le voir ici."))
@@ -130,6 +131,7 @@ struct ItemDetail: View {
     let item: Item
     let torrent: URL?
     let direct: URL?
+    var onSimilar: ((Item) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -137,6 +139,11 @@ struct ItemDetail: View {
             Text([item.creator, item.year, item.type].filter { !$0.isEmpty && $0 != "N/A" }.joined(separator: " · "))
                 .foregroundStyle(.secondary)
             LicenseBadge(license: item.license, long: true)
+            if let a = item.analysisLabel {
+                Text("\(a) — estimé par Freesound")
+                    .asFont(.caption).foregroundStyle(.secondary)
+                    .help("Calculé pour tous les sons, même sans rythme ni note : fiable sur une boucle ou un instrument, pas sur un bruitage")
+            }
             if !item.description.isEmpty {
                 Text(item.description).asFont(.callout).textSelection(.enabled)
             }
@@ -152,6 +159,10 @@ struct ItemDetail: View {
                 }
                 if let torrent {
                     Link(destination: torrent) { Label(".torrent", systemImage: "arrow.down.circle") }
+                }
+                if item.source == "freesound", let onSimilar {
+                    Button { onSimilar(item) } label: { Label("Sons similaires", systemImage: "waveform.badge.magnifyingglass") }
+                        .buttonStyle(.link)
                 }
             }
             // La racine impose la couleur du texte du thème : sans ça, les

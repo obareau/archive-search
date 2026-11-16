@@ -43,6 +43,11 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
     public var preview: String?
     /// Format du fichier d'origine (Freesound : wav, flac, aiff, mp3…).
     public var format: String?
+    /// Analyse automatique de Freesound. Calculée pour TOUS les sons, même sans
+    /// rythme (une corne de brume « à 108 BPM, do mineur ») : une estimation,
+    /// à présenter comme telle.
+    public var bpm: Double?
+    public var tonality: String?
 
     /// La même clé que le panier et le journal côté Python : `source:identifiant`.
     public var key: String {
@@ -63,7 +68,7 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
     // Le Python écrivait `year` tantôt en texte, tantôt en nombre (archive.org) :
     // on accepte les deux à la lecture.
     enum CodingKeys: String, CodingKey {
-        case title, creator, year, type, description, url, thumbnail, source, identifier, keywords, license, preview, format
+        case title, creator, year, type, description, url, thumbnail, source, identifier, keywords, license, preview, format, bpm, tonality
     }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -80,6 +85,8 @@ public struct Item: Codable, Hashable, Identifiable, Sendable {
         license = try? c.decodeIfPresent(License.self, forKey: .license)
         preview = try? c.decodeIfPresent(String.self, forKey: .preview)
         format = try? c.decodeIfPresent(String.self, forKey: .format)
+        bpm = try? c.decodeIfPresent(Double.self, forKey: .bpm)
+        tonality = try? c.decodeIfPresent(String.self, forKey: .tonality)
     }
 }
 
@@ -126,6 +133,54 @@ public enum Collection: String, CaseIterable, Sendable {
     }
 }
 
+/// Filtres appliqués PAR la source : ils ramènent vingt résultats qui
+/// conviennent, là où un filtre local trie les vingt reçus.
+public struct SourceFilters: Hashable, Sendable, Codable {
+    /// Freesound : durée en secondes, bornes incluses.
+    public var minDuration: Double?
+    public var maxDuration: Double?
+    /// Freesound : CC0 seulement (domaine public, aucune attribution).
+    public var cc0Only = false
+    /// Freesound : tempo estimé, bornes incluses.
+    public var minBPM: Int?
+    public var maxBPM: Int?
+    /// archive.org : première année de la décennie (1950 = 1950-1959).
+    public var decade: Int?
+
+    public init(minDuration: Double? = nil, maxDuration: Double? = nil, cc0Only: Bool = false,
+                minBPM: Int? = nil, maxBPM: Int? = nil, decade: Int? = nil) {
+        self.minDuration = minDuration; self.maxDuration = maxDuration; self.cc0Only = cc0Only
+        self.minBPM = minBPM; self.maxBPM = maxBPM; self.decade = decade
+    }
+
+    public var isEmpty: Bool { self == SourceFilters() }
+    public var hasBPM: Bool { minBPM != nil || maxBPM != nil }
+
+    /// Le paramètre `filter` de l'API Freesound (syntaxe Solr), ou nil.
+    public var freesoundFilter: String? {
+        var parts: [String] = []
+        if minDuration != nil || maxDuration != nil {
+            parts.append("duration:[\(minDuration.map { String($0) } ?? "*") TO \(maxDuration.map { String($0) } ?? "*")]")
+        }
+        if cc0Only { parts.append("license:\"Creative Commons 0\"") }
+        if hasBPM { parts.append("bpm:[\(minBPM.map(String.init) ?? "*") TO \(maxBPM.map(String.init) ?? "*")]") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// Fragment de requête archive.org, ou nil.
+    public var archiveClause: String? {
+        decade.map { " AND year:[\($0) TO \($0 + 9)]" }
+    }
+
+    /// Pour la clé d'historique : vide sans filtre, pour rester compatible.
+    var keySuffix: String {
+        guard !isEmpty else { return "" }
+        return "|" + [minDuration.map { "d>\($0)" }, maxDuration.map { "d<\($0)" }, cc0Only ? "cc0" : nil,
+                      minBPM.map { "b>\($0)" }, maxBPM.map { "b<\($0)" }, decade.map { "y\($0)" }]
+            .compactMap { $0 }.joined(separator: ",")
+    }
+}
+
 public struct SearchQuery: Hashable, Sendable {
     public var source: String
     public var text: String
@@ -133,11 +188,12 @@ public struct SearchQuery: Hashable, Sendable {
     public var sort: SortOption
     public var collection: Collection
     public var page: Int
+    public var filters: SourceFilters
 
     public init(source: String, text: String, type: SearchType = .all, sort: SortOption = .relevance,
-                collection: Collection = .all, page: Int = 1) {
+                collection: Collection = .all, page: Int = 1, filters: SourceFilters = SourceFilters()) {
         self.source = source; self.text = text; self.type = type
-        self.sort = sort; self.collection = collection; self.page = max(1, page)
+        self.sort = sort; self.collection = collection; self.page = max(1, page); self.filters = filters
     }
 }
 
@@ -164,4 +220,17 @@ public struct SourceError: LocalizedError, Sendable {
     public let message: String
     public init(_ message: String) { self.message = message }
     public var errorDescription: String? { message }
+}
+
+extension Item {
+    /// Copie modifiée, pour compléter un item en une expression.
+    func with(_ change: (inout Item) -> Void) -> Item { var c = self; change(&c); return c }
+
+    /// « ≈ 108 BPM · do mineur » — toujours marqué comme estimation.
+    public var analysisLabel: String? {
+        var parts: [String] = []
+        if let b = bpm, b > 0 { parts.append("≈ \(Int(b.rounded())) BPM") }
+        if let t = tonality, !t.isEmpty { parts.append(t) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }

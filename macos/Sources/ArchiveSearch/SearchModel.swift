@@ -12,6 +12,8 @@ final class SearchModel: ObservableObject {
     @Published var type: SearchType = .all
     @Published var sort: SortOption = .relevance
     @Published var collection: Collection = .all
+    /// Filtres passés à la source (Freesound : durée, BPM, CC0 ; archive.org : décennie).
+    @Published var filters = SourceFilters()
 
     @Published private(set) var results: [Item] = []
     @Published private(set) var total: Int?
@@ -47,6 +49,15 @@ final class SearchModel: ObservableObject {
         results.filter { (!onlyReusable || $0.license?.free == true) && (sourceFilter == nil || $0.source == sourceFilter) }
     }
     var isAll: Bool { source == Sources.allID }
+    var usesFreesound: Bool { source == "freesound" || isAll }
+    var usesArchive: Bool { isArchive || isAll }
+    /// Les filtres qui concernent la source choisie, et eux seuls.
+    var effectiveFilters: SourceFilters {
+        var f = filters
+        if !usesFreesound { f.minDuration = nil; f.maxDuration = nil; f.cc0Only = false; f.minBPM = nil; f.maxBPM = nil }
+        if !usesArchive { f.decade = nil }
+        return f
+    }
     var hiddenCount: Int { results.count - visible.count }
     var isArchive: Bool { source == "archive.org" }
     var sourceLabel: String { Sources.all.first { $0.id == source }?.label ?? source }
@@ -62,7 +73,7 @@ final class SearchModel: ObservableObject {
         }
         let query = SearchQuery(source: source, text: q,
                                 type: isArchive ? type : .all, sort: isArchive ? sort : .relevance,
-                                collection: isArchive ? collection : .all, page: page)
+                                collection: isArchive ? collection : .all, page: page, filters: effectiveFilters)
         task?.cancel()
         loading = true
         sourceFilter = nil
@@ -104,7 +115,7 @@ final class SearchModel: ObservableObject {
         shownLabel = "« \(q) » · toutes les sources"
         task = Task {
             var lists: [String: [Item]] = [:]
-            let (p, outs) = await Sources.searchAll(q, page: query.page) { [weak self] o, items in
+            let (p, outs) = await Sources.searchAll(q, page: query.page, filters: query.filters) { [weak self] o, items in
                 await MainActor.run {
                     guard let self, !Task.isCancelled else { return }
                     lists[o.source] = items
@@ -131,6 +142,29 @@ final class SearchModel: ObservableObject {
         }
     }
 
+    /// Sons proches d'un son Freesound. Pas d'historique : ce n'est pas une
+    /// recherche qu'on relance, c'est un pas de côté.
+    func showSimilar(_ item: Item) {
+        task?.cancel()
+        error = nil; notice = nil; loading = true
+        task = Task {
+            do {
+                let found = try await Sources.freesoundSimilar(item.identifier)
+                guard !Task.isCancelled else { return }
+                outcomes = []; pending = []; sourceFilter = nil; huntInfo = [:]; isHunt = false; newIDs = []
+                results = found; total = found.count; hasMore = false; page = 1
+                related = relatedTerms(found, query: item.title)
+                selection = nil
+                shownLabel = "≈ « \(item.title) »"
+                if found.isEmpty { notice = "Freesound ne connaît aucun son proche de celui-ci." }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.error = error.localizedDescription
+            }
+            loading = false
+        }
+    }
+
     /// La récolte classée d'une fouille. Pas d'historique : une fouille de
     /// quinze termes y créerait quinze entrées.
     static let huntShown = 120
@@ -151,6 +185,7 @@ final class SearchModel: ObservableObject {
     /// Relancer une recherche de l'historique, avec ses réglages.
     func replay(_ q: SearchQuery) {
         source = q.source; text = q.text; type = q.type; sort = q.sort; collection = q.collection
+        filters = q.filters
         search(page: 1)
     }
 

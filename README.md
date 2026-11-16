@@ -337,3 +337,9 @@ Ses différences avec l'app native :
   champ comme requête de classement.
 - **Le journal commence le 2026-10-11** : les lots téléchargés avant ne s'y
   trouvent pas.
+
+## Licence
+
+Le code est sous licence [MIT](LICENSE). Elle ne couvre que le logiciel :
+chaque document trouvé avec l'app garde sa propre licence, celle qu'affiche
+son badge. C'est elle qui dit ce qu'on peut en faire.

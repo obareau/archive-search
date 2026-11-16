@@ -15,6 +15,7 @@ import Foundation
 ///   ARCHIVE_DEMO_REPORT="12"               ouvre « Voir le rendement » 12 s après la fin de la fouille
 ///   ARCHIVE_DEMO_DONE="/chemin"            fichier témoin écrit quand la fouille est classée
 ///   ARCHIVE_DEMO_SETTINGS="1"              ouvre les Réglages
+///   ARCHIVE_DEMO_THEME="nord" · _SCALE="1.3" · _FONT="menlo"   apparence imposée, non enregistrée
 @MainActor
 enum Demo {
     static let env = ProcessInfo.processInfo.environment

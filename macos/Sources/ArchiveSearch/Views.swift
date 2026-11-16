@@ -3,7 +3,9 @@ import SwiftUI
 
 extension Color {
     /// Ambre sourd de la version web : lisible sur fond sombre comme clair.
-    static let amber = Color(red: 0xC9 / 255, green: 0x89 / 255, blue: 0x3F / 255)
+    /// L'ambre d'origine. L'interface prend l'accent du thème (`.tint`) ;
+    /// cette constante ne sert plus qu'aux réglages par défaut.
+    static let amber = archiveAmber
     static let licOK = Color(red: 0x4F / 255, green: 0x9A / 255, blue: 0x63 / 255)
     static let licBad = Color(red: 0xC0 / 255, green: 0x56 / 255, blue: 0x4A / 255)
 }
@@ -18,6 +20,7 @@ struct ContentView: View {
     @EnvironmentObject var library: LibraryModel
     @EnvironmentObject var downloads: DownloadModel
     @EnvironmentObject var watch: WatchModel
+    @EnvironmentObject var prefs: Prefs
     @StateObject private var hunt = HuntModel()
     @Local private var showInspector = true
     @Local private var pane: Pane = .results
@@ -56,15 +59,18 @@ struct ContentView: View {
         .frame(minWidth: 640, minHeight: 420)
         .inspector(isPresented: $showInspector) {
             PlayerPane(item: selected, player: player)
+                .asSurface(alt: true)
                 .inspectorColumnWidth(min: 300, ideal: 420, max: 700)
         }
-        .sheet(isPresented: $hunt.showSheet) { HuntSheet(hunt: hunt, search: model) }
+        // Les feuilles sont des fenêtres à part : elles reçoivent la racine du
+        // style explicitement, comme dans AZA.
+        .sheet(isPresented: $hunt.showSheet) { HuntSheet(hunt: hunt, search: model).asRoot(prefs) }
         .sheet(isPresented: $hunt.showReport) {
-            if let p = hunt.last { HuntReport(p: p, theme: hunt.lastTheme) }
+            if let p = hunt.last { HuntReport(p: p, theme: hunt.lastTheme).asRoot(prefs) }
         }
         .sheet(item: Binding(get: { downloads.finished.map(FinishedBox.init) },
                              set: { if $0 == nil { downloads.finished = nil } })) { box in
-            DownloadReport(p: box.p, folder: downloads.folder)
+            DownloadReport(p: box.p, folder: downloads.folder).asRoot(prefs)
         }
         .alert("Enregistrement impossible", isPresented: Binding(get: { library.saveError != nil },
                                                                  set: { if !$0 { library.saveError = nil } })) {
@@ -129,7 +135,7 @@ struct ContentView: View {
                     .focused($searchFocused)
                     .onSubmit { model.search(); pane = .results }
                 Button(model.source == "loc.gov" ? "Ouvrir ↗" : "Chercher") { model.search(); pane = .results }
-                    .buttonStyle(.borderedProminent).tint(.amber)
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -178,10 +184,10 @@ struct ContentView: View {
                     }
                     if !model.newIDs.isEmpty {
                         Text("✦ \(model.newIDs.count) nouveauté\(model.newIDs.count > 1 ? "s" : "") depuis la dernière fois")
-                            .foregroundStyle(Color.amber).fontWeight(.medium)
+                            .foregroundStyle(.tint).fontWeight(.medium)
                     }
                 }
-                .font(.callout)
+                .asFont(.callout)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,6 +221,7 @@ struct ContentView: View {
                     if model.page > 1 || model.hasMore { pager.listRowSeparator(.hidden) }
                 }
                 .listStyle(.inset)
+                .asSurface()
             }
             if model.loading {
                 ProgressView().controlSize(.large)
@@ -235,6 +242,7 @@ struct ContentView: View {
                 }
             }
             .listStyle(.inset)
+                .asSurface()
         }
     }
 
@@ -253,12 +261,13 @@ struct ContentView: View {
 /// Ce que chaque source a rendu dans une recherche « toutes les sources ».
 /// Un clic n'affiche que cette source ; un second clic les remet toutes.
 struct SourcesRow: View {
+    @Environment(\.archiveStyle) private var style
     @ObservedObject var model: SearchModel
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("Sources").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .leading)
+            Text("Sources").asFont(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                .frame(width: style.labelWidth, alignment: .leading)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(Sources.allSources, id: \.self) { src in chip(src) }
@@ -280,7 +289,7 @@ struct SourcesRow: View {
                 }
             }
             .buttonStyle(.bordered).controlSize(.small)
-            .tint(on ? .amber : nil)
+            .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
             .disabled(o.error != nil || o.count == 0)
             .help(o.error ?? String(format: "%d résultat%@ en %.1f s%@ — un clic n'affiche que cette source",
                                     o.count, o.count > 1 ? "s" : "", o.seconds,
@@ -290,7 +299,7 @@ struct SourcesRow: View {
                 ProgressView().controlSize(.mini)
                 Text(src).foregroundStyle(.secondary)
             }
-            .font(.callout)
+            .asFont(.callout)
             .padding(.horizontal, 6)
             .help(src == "gutenberg" ? "Gutenberg met 15 à 30 s : ses résultats s'ajouteront à l'arrivée" : "en attente")
         }
@@ -298,6 +307,7 @@ struct SourcesRow: View {
 }
 
 struct RelatedRow: View {
+    @Environment(\.archiveStyle) private var style
     let title: String
     let terms: [String]
     let action: (String) -> Void
@@ -305,8 +315,8 @@ struct RelatedRow: View {
     var body: some View {
         if !terms.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    .frame(width: 52, alignment: .leading)
+                Text(title).asFont(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                    .frame(width: style.labelWidth, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(terms, id: \.self) { t in
@@ -335,35 +345,35 @@ struct ResultRow: View {
         HStack(alignment: .top, spacing: 12) {
             thumb
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).font(.headline).lineLimit(2)
+                Text(item.title).asFont(.headline).lineLimit(2)
                 Text([item.creator, item.year, item.type, item.source].filter { !$0.isEmpty && $0 != "N/A" }
                     .joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .asFont(.caption).foregroundStyle(.secondary).lineLimit(1)
                 if !item.description.isEmpty {
-                    Text(item.description).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    Text(item.description).asFont(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
                 if let h = hunt {
                     Text("trouvé par " + h.hits.joined(separator: ", ")
                          + (h.rel.map { String(format: " · proximité %.2f", $0) } ?? ""))
-                        .font(.caption).foregroundStyle(Color.amber)
+                        .asFont(.caption).foregroundStyle(.tint)
                 }
                 HStack(spacing: 6) {
                     if isNew {
-                        Text("nouveau").font(.caption2.weight(.bold))
+                        Text("nouveau").asFont(.caption2).fontWeight(.bold)
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.amber, in: Capsule())
+                            .background(.tint, in: Capsule())
                             .foregroundStyle(.black)
                             .help("Apparu depuis le passage précédent de cette recherche")
                     }
                     LicenseBadge(license: item.license, long: false)
                     if taken {
                         Label("glisser vers le DAW", systemImage: "hand.draw").labelStyle(.iconOnly)
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .asFont(.caption2).foregroundStyle(.secondary)
                             .help("Fichier sur le disque : glisser la vignette dépose le fichier lui-même (Logic, Ableton, Finder)")
-                        Text("déjà pris").font(.caption2.weight(.semibold))
+                        Text("déjà pris").asFont(.caption2).fontWeight(.semibold)
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.amber.opacity(0.18), in: Capsule())
-                            .foregroundStyle(Color.amber)
+                            .background(.tint.opacity(0.18), in: Capsule())
+                            .foregroundStyle(.tint)
                             .help("Le fichier est déjà sur le disque : le reprendre ne redemandera rien au réseau.")
                     }
                 }
@@ -374,7 +384,7 @@ struct ResultRow: View {
         .padding(.vertical, 4)
         .overlay(alignment: .leading) {
             // Liseré ambre, comme la version web.
-            if isNew { Rectangle().fill(Color.amber).frame(width: 3).offset(x: -8) }
+            if isNew { Rectangle().fill(.tint).frame(width: 3).offset(x: -8) }
         }
         .contextMenu {
             if let f = Journal.live(item).1.first {
@@ -442,11 +452,11 @@ struct LicenseBadge: View {
             }
             HStack(spacing: 6) {
                 Text(text)
-                    .font(.caption2.weight(.semibold))
+                    .asFont(.caption2).fontWeight(.semibold)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .foregroundStyle(color)
                     .overlay(Capsule().strokeBorder(color.opacity(0.6)))
-                if long { Text(tip).font(.caption).foregroundStyle(.secondary) }
+                if long { Text(tip).asFont(.caption).foregroundStyle(.secondary) }
             }
             .help(tip)
         }
